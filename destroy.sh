@@ -35,6 +35,13 @@ TOTAL_STEPS=7
 ERRORS=()
 WARNINGS=()
 
+# Function to create separator line
+separator_line() {
+    printf "${BLUE}"
+    printf '=%.0s' {1..80}
+    printf "${NC}\n"
+}
+
 # Logging functions
 log_info() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -69,7 +76,7 @@ log_step() {
     STEP_COUNT=$((STEP_COUNT + 1))
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "\n${BOLD}${BLUE}[STEP $STEP_COUNT/$TOTAL_STEPS]${NC} ${timestamp} - $1"
-    echo -e "${BLUE}${'='*80}${NC}"
+    separator_line
 }
 
 # Progress bar function
@@ -147,9 +154,9 @@ check_aws_cli() {
         exit 1
     fi
     
-    local caller_identity=$(aws sts get-caller-identity --output json)
-    local account_id=$(echo $caller_identity | jq -r '.Account' 2>/dev/null || echo "N/A")
-    local user_arn=$(echo $caller_identity | jq -r '.Arn' 2>/dev/null || echo "N/A")
+    local caller_identity=$(aws sts get-caller-identity --output json 2>/dev/null)
+    local account_id=$(echo $caller_identity | grep -o '"Account":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
+    local user_arn=$(echo $caller_identity | grep -o '"Arn":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
     
     log_success "AWS credentials valid"
     log_debug "Account ID: $account_id"
@@ -250,9 +257,9 @@ discover_resources() {
     
     # Get stack information
     local stack_info=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --output json)
-    local stack_status=$(echo $stack_info | jq -r '.Stacks[0].StackStatus')
-    local creation_time=$(echo $stack_info | jq -r '.Stacks[0].CreationTime')
-    local last_updated=$(echo $stack_info | jq -r '.Stacks[0].LastUpdatedTime // "Never"')
+    local stack_status=$(echo $stack_info | grep -o '"StackStatus":"[^"]*"' | cut -d'"' -f4)
+    local creation_time=$(echo $stack_info | grep -o '"CreationTime":"[^"]*"' | cut -d'"' -f4)
+    local last_updated=$(echo $stack_info | grep -o '"LastUpdatedTime":"[^"]*"' | cut -d'"' -f4 || echo "Never")
     
     log_success "Found CloudFormation stack"
     log_info "Stack Status: $stack_status"
@@ -260,20 +267,30 @@ discover_resources() {
     log_info "Last Updated: $last_updated"
     
     # Get stack outputs if available
-    local outputs=$(echo $stack_info | jq -r '.Stacks[0].Outputs // []')
-    if [ "$outputs" != "[]" ]; then
-        log_info "Retrieving stack outputs..."
-        
-        CONFIG_BUCKET=$(echo $stack_info | jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="ConfigBucketName") | .OutputValue // empty')
-        WEBSITE_BUCKET=$(echo $stack_info | jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="WebsiteBucketName") | .OutputValue // empty')
-        RESPONSES_BUCKET=$(echo $stack_info | jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="ResponsesBucketName") | .OutputValue // empty')
-        
-        log_debug "Config Bucket: $CONFIG_BUCKET"
-        log_debug "Website Bucket: $WEBSITE_BUCKET"
-        log_debug "Responses Bucket: $RESPONSES_BUCKET"
-    else
+    CONFIG_BUCKET=$(aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='ConfigBucketName'].OutputValue" \
+        --output text 2>/dev/null || echo "")
+    
+    WEBSITE_BUCKET=$(aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='WebsiteBucketName'].OutputValue" \
+        --output text 2>/dev/null || echo "")
+    
+    RESPONSES_BUCKET=$(aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" \
+        --output text 2>/dev/null || echo "")
+    
+    log_debug "Config Bucket: $CONFIG_BUCKET"
+    log_debug "Website Bucket: $WEBSITE_BUCKET"
+    log_debug "Responses Bucket: $RESPONSES_BUCKET"
+    
+    if [ -z "$CONFIG_BUCKET" ] || [ "$CONFIG_BUCKET" = "None" ]; then
         log_warning "No stack outputs found - stack may be in failed state"
-        
         # Try to discover buckets by naming convention
         log_info "Attempting to discover buckets by naming convention..."
         discover_buckets_by_name
@@ -673,9 +690,10 @@ main() {
     
     # Script header
     echo -e "${BOLD}${RED}"
-    echo "========================================================================"
+    printf '=%.0s' {1..72}
+    echo ""
     echo "  $SCRIPT_NAME v$SCRIPT_VERSION - Enhanced Destruction Script"
-    echo "========================================================================"
+    printf '=%.0s' {1..72}
     echo -e "${NC}"
     
     log_info "Starting destruction of DMGT Basic Form"
