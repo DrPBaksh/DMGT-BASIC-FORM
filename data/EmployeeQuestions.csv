@@ -1,0 +1,41 @@
+QuestionID,Question,QuestionType,QuestionTypeDetails,Required,Section,AllowFileUpload,QuestionOrder
+EMP_001,What is your primary job function?,single-choice,"Executive/Leadership|Sales|Marketing|Operations|Finance|HR|IT/Engineering|Data/Analytics|Customer Service|Product Management|Research & Development|Other",true,Personal Profile,false,1
+EMP_002,How many years of experience do you have in your current role?,single-choice,"Less than 1 year|1-2 years|3-5 years|6-10 years|More than 10 years",true,Personal Profile,false,2
+EMP_003,What is your highest level of education?,single-choice,"High School|Associate Degree|Bachelor's Degree|Master's Degree|PhD|Professional Certification|Other",true,Personal Profile,false,3
+EMP_004,Do you have any formal training in data analysis or AI?,yes-no,,true,Personal Profile,false,4
+EMP_005,"If yes, please describe your data/AI training background:",textarea,,false,Personal Profile,true,5
+EMP_006,How would you rate your overall comfort level with technology?,rating,"1,5",true,Technology Comfort,false,6
+EMP_007,How often do you use data in your daily work?,single-choice,"Multiple times daily|Daily|Weekly|Monthly|Rarely|Never",true,Data Usage,false,7
+EMP_008,What types of data do you work with regularly?,multiple-choice,"Customer data|Sales data|Financial data|Operational data|Marketing data|Product data|Survey data|No data|Other",true,Data Usage,false,8
+EMP_009,Which data analysis tools do you currently use?,multiple-choice,"Excel|Google Sheets|Tableau|Power BI|SQL databases|R|Python|SPSS|SAS|None|Other",true,Data Tools,false,9
+EMP_010,How confident are you in interpreting data visualizations?,rating,"1,5",true,Data Skills,false,10
+EMP_011,Can you create basic charts and graphs from data?,yes-no,,true,Data Skills,false,11
+EMP_012,How comfortable are you with statistical concepts?,rating,"1,5",false,Data Skills,false,12
+EMP_013,Have you ever used AI tools in your work?,yes-no,,true,AI Usage,false,13
+EMP_014,Which AI tools do you use regularly?,multiple-choice,"ChatGPT|Copilot|Grammarly|Automated scheduling|Recommendation systems|Image/Video editing AI|Translation tools|Voice assistants|None|Other",false,AI Usage,false,14
+EMP_015,How frequently do you use AI tools?,single-choice,"Multiple times daily|Daily|Weekly|Monthly|Rarely|Never",false,AI Usage,false,15
+EMP_016,What do you primarily use AI tools for?,multiple-choice,"Writing assistance|Data analysis|Research|Creative tasks|Problem solving|Automation|Communication|Learning|Not applicable|Other",false,AI Usage,false,16
+EMP_017,How comfortable are you with AI making recommendations for your work?,rating,"1,5",true,AI Comfort,false,17
+EMP_018,Do you trust AI-generated insights or recommendations?,single-choice,"Completely|Mostly|Somewhat|Rarely|Never",true,AI Comfort,false,18
+EMP_019,What concerns do you have about AI in the workplace?,multiple-choice,"Job displacement|Privacy issues|Accuracy of results|Lack of human oversight|Bias in AI systems|Loss of human skills|No concerns|Other",false,AI Concerns,false,19
+EMP_020,How do you verify AI-generated content or recommendations?,multiple-choice,"Cross-check with multiple sources|Ask colleagues|Use domain expertise|Test with known examples|Don't verify|Other",false,AI Verification,false,20
+EMP_021,Have you received any training on AI tools from your company?,single-choice,"Yes - comprehensive|Yes - basic|No - but want to|No - not interested|No - not offered",true,Training,false,21
+EMP_022,What type of data/AI training would be most valuable to you?,multiple-choice,"Basic data literacy|Advanced analytics|AI tool usage|Data visualization|Statistical analysis|Machine learning concepts|Data ethics|None needed",true,Training Needs,false,22
+EMP_023,How much time per week would you be willing to spend on data/AI training?,single-choice,"1-2 hours|3-5 hours|6-10 hours|More than 10 hours|No time available",true,Training Commitment,false,23
+EMP_024,What is your preferred learning format?,single-choice,"Online courses|In-person workshops|Mentoring|Self-paced tutorials|Hands-on projects|Certification programs|Other",true,Learning Preferences,false,24
+EMP_025,Do you feel your current skills prepare you for an AI-driven workplace?,rating,"1,5",true,Future Readiness,false,25
+EMP_026,How has AI changed your work in the past year?,single-choice,"Made it much easier|Made it somewhat easier|No change|Made it somewhat harder|Made it much harder|Not applicable",false,AI Impact,false,26
+EMP_027,What percentage of your routine tasks could potentially be automated?,slider,"0,100",false,Automation Potential,false,27
+EMP_028,How do you feel about routine task automation in your role?,single-choice,"Very positive|Positive|Neutral|Negative|Very negative",true,Automation Attitude,false,28
+EMP_029,What new skills do you think you'll need in the next 3 years?,multiple-choice,"AI tool proficiency|Data analysis|Programming|Machine learning|Data visualization|Statistical thinking|AI ethics|Digital literacy|Other",true,Skill Development,false,29
+EMP_030,How proactive are you in learning about new AI/data technologies?,rating,"1,5",true,Learning Motivation,false,30
+EMP_031,Do you participate in any data/AI communities or forums?,yes-no,,false,Community Engagement,false,31
+EMP_032,"If yes, please specify which communities:",textarea,,false,Community Engagement,false,32
+EMP_033,How often do you read about AI/data trends and developments?,single-choice,"Daily|Weekly|Monthly|Quarterly|Rarely|Never",false,Staying Updated,false,33
+EMP_034,What sources do you use to stay updated on AI/data trends?,multiple-choice,"Industry publications|Social media|Webinars|Conferences|Podcasts|Newsletters|Colleagues|None|Other",false,Information Sources,false,34
+EMP_035,How do you think AI will impact your career in the next 5 years?,single-choice,"Very positively|Positively|No impact|Negatively|Very negatively|Unsure",true,Career Outlook,false,35
+EMP_036,What would make you more effective at using data and AI in your work?,multiple-choice,"Better tools|More training|Clearer guidelines|Management support|More time|Better data quality|Collaboration with experts|Other",true,Effectiveness Factors,false,36
+EMP_037,Rate your organization's support for employee AI/data development,rating,"1,5",true,Organizational Support,false,37
+EMP_038,How well does your company communicate its AI/data strategy to employees?,rating,"1,5",false,Communication,false,38
+EMP_039,What would motivate you most to improve your data/AI skills?,single-choice,"Career advancement|Salary increase|Job security|Personal interest|Company requirement|Industry relevance|Other",true,Motivation,false,39
+EMP_040,Any additional thoughts on your data and AI readiness journey?,textarea,,false,Additional Comments,true,40
