@@ -129,6 +129,7 @@ Resources:
           import boto3
           import csv
           import io
+          import os
           from botocore.exceptions import NoCredentialsError, ClientError
 
           s3 = boto3.client('s3')
