@@ -1,0 +1,41 @@
+QuestionID,Question,QuestionType,QuestionTypeDetails,Required,Section,AllowFileUpload,QuestionOrder
+COMP_001,What is your company's primary industry sector?,single-choice,"Technology|Healthcare|Financial Services|Manufacturing|Retail|Education|Government|Energy|Media|Other",true,Company Profile,false,1
+COMP_002,What is your company's annual revenue range?,single-choice,"Under $1M|$1M-$10M|$10M-$50M|$50M-$250M|$250M-$1B|Over $1B",true,Company Profile,false,2
+COMP_003,How many employees does your company have?,single-choice,"1-10|11-50|51-200|201-1000|1001-5000|5000+",true,Company Profile,false,3
+COMP_004,What is your role in data and AI decision-making?,single-choice,"Primary decision maker|Significant influence|Some influence|No influence",true,Company Profile,false,4
+COMP_005,Does your company have a formal data strategy?,single-choice,"Yes - comprehensive|Yes - basic|In development|No - but planned|No - not planned",true,Data Strategy,false,5
+COMP_006,"If yes, please describe your data strategy goals:",textarea,,false,Data Strategy,true,6
+COMP_007,Does your company have a formal AI strategy?,single-choice,"Yes - comprehensive|Yes - basic|In development|No - but planned|No - not planned",true,AI Strategy,false,7
+COMP_008,"If yes, please describe your AI strategy goals:",textarea,,false,AI Strategy,true,8
+COMP_009,What percentage of your business processes are currently digitized?,slider,"0,100",true,Data Infrastructure,false,9
+COMP_010,Which cloud platforms does your company primarily use?,multiple-choice,"AWS|Microsoft Azure|Google Cloud|IBM Cloud|Oracle Cloud|Other|None - On-premise only",true,Data Infrastructure,false,10
+COMP_011,What is your current data storage architecture?,multiple-choice,"Traditional databases|Data warehouse|Data lake|Hybrid approach|Cloud-native|Unsure",true,Data Infrastructure,false,11
+COMP_012,How would you rate your data quality?,rating,"1,5",true,Data Quality,false,12
+COMP_013,Do you have automated data validation processes?,yes-no,,true,Data Quality,false,13
+COMP_014,What percentage of your data is structured vs unstructured?,slider,"0,100",false,Data Quality,false,14
+COMP_015,How often do you perform data audits?,single-choice,"Continuously|Monthly|Quarterly|Annually|Never",true,Data Governance,false,15
+COMP_016,Do you have a Chief Data Officer or equivalent role?,yes-no,,true,Data Governance,false,16
+COMP_017,What data governance frameworks do you follow?,multiple-choice,"GDPR|CCPA|SOX|HIPAA|ISO 27001|Custom framework|None",true,Data Governance,false,17
+COMP_018,How do you currently handle data privacy and security?,textarea,,true,Data Governance,true,18
+COMP_019,Which AI/ML technologies is your company currently using?,multiple-choice,"Machine Learning|Natural Language Processing|Computer Vision|Predictive Analytics|Robotic Process Automation|Chatbots/Virtual Assistants|Recommendation Systems|None",true,AI Adoption,false,19
+COMP_020,What is the primary purpose of your AI implementations?,multiple-choice,"Customer service|Operations optimization|Risk management|Product development|Marketing|Sales|HR|Finance|Not applicable",false,AI Adoption,false,20
+COMP_021,How many AI/ML projects has your company completed in the last 12 months?,number,,true,AI Adoption,false,21
+COMP_022,What percentage of your AI projects moved from pilot to production?,slider,"0,100",false,AI Adoption,false,22
+COMP_023,What are the biggest barriers to AI adoption in your organization?,multiple-choice,"Lack of skills|Budget constraints|Data quality issues|Technology limitations|Regulatory concerns|Leadership buy-in|Cultural resistance|Other",true,AI Challenges,false,23
+COMP_024,How do you measure ROI on data and AI investments?,textarea,,false,AI Challenges,true,24
+COMP_025,What is your annual budget allocation for data and AI initiatives?,single-choice,"Less than 1%|1-5%|6-10%|11-20%|More than 20%|Not specified",false,Investment,false,25
+COMP_026,How do you prioritize data and AI projects?,single-choice,"Business impact|Technical feasibility|Available resources|Regulatory requirements|Customer demand|Other",true,Investment,false,26
+COMP_027,Do you have partnerships with external AI/data vendors?,yes-no,,false,Partnerships,false,27
+COMP_028,"If yes, please list your key data/AI technology partners:",textarea,,false,Partnerships,true,28
+COMP_029,What percentage of your workforce has received AI/data training?,slider,"0,100",true,Skills & Training,false,29
+COMP_030,Do you have formal training programs for data literacy?,yes-no,,true,Skills & Training,false,30
+COMP_031,How do you plan to address AI skills gaps?,multiple-choice,"Hire new talent|Train existing employees|Partner with universities|Use consultants|Outsource|No specific plan",true,Skills & Training,false,31
+COMP_032,What ethical AI principles does your company follow?,multiple-choice,"Fairness|Transparency|Accountability|Privacy|Human oversight|Bias mitigation|Explainability|None established",false,AI Ethics,false,32
+COMP_033,Do you have an AI ethics review board or committee?,yes-no,,false,AI Ethics,false,33
+COMP_034,How do you ensure AI transparency and explainability?,textarea,,false,AI Ethics,true,34
+COMP_035,What are your top 3 data and AI priorities for the next 12 months?,textarea,,true,Future Plans,true,35
+COMP_036,How do you expect AI to transform your industry in the next 5 years?,textarea,,false,Future Plans,true,36
+COMP_037,What new data sources are you planning to integrate?,multiple-choice,"IoT sensors|Social media|Third-party APIs|Satellite data|Wearable devices|Voice data|Video/Image data|Other|None",false,Future Plans,false,37
+COMP_038,Rate your company's overall data and AI maturity,rating,"1,5",true,Overall Assessment,false,38
+COMP_039,What would most accelerate your data and AI journey?,single-choice,"Better technology|More skilled people|Increased budget|Executive support|Clearer strategy|Regulatory clarity|Other",true,Overall Assessment,false,39
+COMP_040,Any additional comments about your data and AI readiness?,textarea,,false,Overall Assessment,true,40
