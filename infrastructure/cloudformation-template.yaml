@@ -1,0 +1,536 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DMGT Basic Form - Data and AI Readiness Assessment Infrastructure'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+
+Resources:
+  # S3 Bucket for Form Configuration (CSV files)
+  DMGTFormConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-config-${Environment}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for Form Responses
+  DMGTFormResponsesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-responses-${Environment}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for Static Website Hosting
+  DMGTFormWebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-website-${Environment}-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket Policy for Website
+  DMGTFormWebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DMGTFormWebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub '${DMGTFormWebsiteBucket}/*'
+
+  # IAM Role for Lambda Functions
+  DMGTFormLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'dmgt-basic-form-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${DMGTFormConfigBucket}/*'
+                  - !Sub '${DMGTFormResponsesBucket}/*'
+                  - !Ref DMGTFormConfigBucket
+                  - !Ref DMGTFormResponsesBucket
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda Function for Form Configuration
+  DMGTFormConfigLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'dmgt-basic-form-config-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt DMGTFormLambdaRole.Arn
+      Environment:
+        Variables:
+          CONFIG_BUCKET: !Ref DMGTFormConfigBucket
+          RESPONSES_BUCKET: !Ref DMGTFormResponsesBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import csv
+          import io
+          from botocore.exceptions import NoCredentialsError, ClientError
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              try:
+                  http_method = event['httpMethod']
+                  path = event['path']
+                  
+                  if http_method == 'GET' and '/config/' in path:
+                      # Get form configuration
+                      form_type = path.split('/config/')[1]
+                      return get_form_config(form_type)
+                  
+                  return {
+                      'statusCode': 404,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': 'Not found'})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': str(e)})
+                  }
+
+          def get_form_config(form_type):
+              try:
+                  config_bucket = os.environ['CONFIG_BUCKET']
+                  filename = f'{form_type}Questions.csv'
+                  
+                  response = s3.get_object(Bucket=config_bucket, Key=filename)
+                  csv_content = response['Body'].read().decode('utf-8')
+                  
+                  csv_reader = csv.DictReader(io.StringIO(csv_content))
+                  questions = list(csv_reader)
+                  
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps(questions)
+                  }
+              except ClientError as e:
+                  return {
+                      'statusCode': 404,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': 'Configuration not found'})
+                  }
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda Function for Form Responses
+  DMGTFormResponsesLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'dmgt-basic-form-responses-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt DMGTFormLambdaRole.Arn
+      Environment:
+        Variables:
+          CONFIG_BUCKET: !Ref DMGTFormConfigBucket
+          RESPONSES_BUCKET: !Ref DMGTFormResponsesBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+          from botocore.exceptions import ClientError
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              try:
+                  http_method = event['httpMethod']
+                  
+                  if http_method == 'OPTIONS':
+                      return {
+                          'statusCode': 200,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': 'Content-Type',
+                              'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          }
+                      }
+                  
+                  if http_method == 'POST':
+                      return save_response(event)
+                  elif http_method == 'GET':
+                      return get_company_status(event)
+                  
+                  return {
+                      'statusCode': 405,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': 'Method not allowed'})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': str(e)})
+                  }
+
+          def save_response(event):
+              body = json.loads(event['body'])
+              company_id = body['companyId']
+              form_type = body['formType']  # 'company' or 'employee'
+              responses = body['responses']
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              timestamp = datetime.utcnow().isoformat()
+              
+              if form_type == 'company':
+                  # Check if company form already exists
+                  try:
+                      s3.head_object(Bucket=responses_bucket, Key=f'{company_id}/company.json')
+                      return {
+                          'statusCode': 400,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': 'Content-Type',
+                              'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          },
+                          'body': json.dumps({'error': 'Company questionnaire already completed for this Company ID'})
+                      }
+                  except ClientError:
+                      pass  # File doesn't exist, proceed
+                  
+                  filename = f'{company_id}/company.json'
+              else:
+                  # For employee, get next employee number
+                  employee_id = get_next_employee_id(company_id)
+                  filename = f'{company_id}/employee_{employee_id}.json'
+                  responses['employeeId'] = employee_id
+              
+              # Add metadata
+              response_data = {
+                  'companyId': company_id,
+                  'formType': form_type,
+                  'timestamp': timestamp,
+                  'responses': responses
+              }
+              
+              # Save to S3
+              s3.put_object(
+                  Bucket=responses_bucket,
+                  Key=filename,
+                  Body=json.dumps(response_data, indent=2),
+                  ContentType='application/json'
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type',
+                      'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                  },
+                  'body': json.dumps({'message': 'Response saved successfully', 'filename': filename})
+              }
+
+          def get_next_employee_id(company_id):
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              try:
+                  response = s3.list_objects_v2(Bucket=responses_bucket, Prefix=f'{company_id}/employee_')
+                  if 'Contents' in response:
+                      employee_files = [obj['Key'] for obj in response['Contents'] if obj['Key'].startswith(f'{company_id}/employee_')]
+                      return len(employee_files)
+                  return 0
+              except ClientError:
+                  return 0
+
+          def get_company_status(event):
+              query_params = event.get('queryStringParameters', {}) or {}
+              company_id = query_params.get('companyId')
+              
+              if not company_id:
+                  return {
+                      'statusCode': 400,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': 'companyId required'})
+                  }
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              try:
+                  s3.head_object(Bucket=responses_bucket, Key=f'{company_id}/company.json')
+                  company_completed = True
+              except ClientError:
+                  company_completed = False
+              
+              # Count employees
+              try:
+                  response = s3.list_objects_v2(Bucket=responses_bucket, Prefix=f'{company_id}/employee_')
+                  employee_count = len(response.get('Contents', []))
+              except ClientError:
+                  employee_count = 0
+              
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type',
+                      'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                  },
+                  'body': json.dumps({
+                      'companyCompleted': company_completed,
+                      'employeeCount': employee_count
+                  })
+              }
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # API Gateway
+  DMGTFormAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'dmgt-basic-form-api-${Environment}'
+      Description: API for DMGT Basic Form
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # API Gateway Deployment
+  DMGTFormAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - DMGTFormConfigMethod
+      - DMGTFormResponsesMethod
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      StageName: !Ref Environment
+
+  # API Gateway Resources and Methods
+  DMGTFormConfigResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: config
+
+  DMGTFormConfigProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !Ref DMGTFormConfigResource
+      PathPart: '{proxy+}'
+
+  DMGTFormConfigMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref DMGTFormConfigProxyResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormConfigLambda.Arn}/invocations'
+
+  DMGTFormResponsesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: responses
+
+  DMGTFormResponsesMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref DMGTFormResponsesResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormResponsesLambda.Arn}/invocations'
+
+  # Lambda Permissions
+  DMGTFormConfigLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DMGTFormConfigLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DMGTFormAPI}/*/*/*'
+
+  DMGTFormResponsesLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DMGTFormResponsesLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DMGTFormAPI}/*/*/*'
+
+  # CloudFront Distribution
+  DMGTFormCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt DMGTFormWebsiteBucket.RegionalDomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+        Comment: !Sub 'CloudFront distribution for dmgt-basic-form-${Environment}'
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  WebsiteBucketName:
+    Description: Name of the S3 bucket for website hosting
+    Value: !Ref DMGTFormWebsiteBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteBucket'
+
+  ConfigBucketName:
+    Description: Name of the S3 bucket for form configuration
+    Value: !Ref DMGTFormConfigBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigBucket'
+
+  ResponsesBucketName:
+    Description: Name of the S3 bucket for form responses
+    Value: !Ref DMGTFormResponsesBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ResponsesBucket'
+
+  ApiGatewayUrl:
+    Description: URL of the API Gateway
+    Value: !Sub 'https://${DMGTFormAPI}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  CloudFrontDomainName:
+    Description: CloudFront Distribution Domain Name
+    Value: !GetAtt DMGTFormCloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontDomain'
+
+  WebsiteURL:
+    Description: Website URL
+    Value: !Sub 'https://${DMGTFormCloudFrontDistribution.DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteURL'
