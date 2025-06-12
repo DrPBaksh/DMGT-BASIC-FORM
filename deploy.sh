@@ -241,8 +241,12 @@ pre_deployment_checks() {
             log_info "Please delete the failed stack first: aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION"
             exit 1
         fi
+        
+        # Set flag that stack exists for changeset creation
+        STACK_EXISTS=true
     else
         log_success "No existing stack found - ready for deployment"
+        STACK_EXISTS=false
     fi
 }
 
@@ -255,6 +259,7 @@ deploy_infrastructure() {
     log_info "Stack Name: $STACK_NAME"
     log_info "Environment: $ENVIRONMENT"
     log_info "Region: $REGION"
+    log_info "Stack Exists: $STACK_EXISTS"
     
     # Validate template first
     log_info "Validating CloudFormation template..."
@@ -263,7 +268,18 @@ deploy_infrastructure() {
     # Create changeset for review
     log_info "Creating changeset for review..."
     local changeset_name="changeset-$(date +%s)"
-    execute_command "aws cloudformation create-change-set --stack-name $STACK_NAME --template-body file://infrastructure/cloudformation-template.yaml --parameters ParameterKey=Environment,ParameterValue=$ENVIRONMENT --capabilities CAPABILITY_NAMED_IAM --change-set-name $changeset_name --region $REGION" "Changeset creation"
+    
+    # Determine changeset type based on whether stack exists
+    local changeset_type=""
+    if [ "$STACK_EXISTS" = "true" ]; then
+        changeset_type="UPDATE"
+        log_debug "Using UPDATE changeset type for existing stack"
+    else
+        changeset_type="CREATE"
+        log_debug "Using CREATE changeset type for new stack"
+    fi
+    
+    execute_command "aws cloudformation create-change-set --stack-name $STACK_NAME --template-body file://infrastructure/cloudformation-template.yaml --parameters ParameterKey=Environment,ParameterValue=$ENVIRONMENT --capabilities CAPABILITY_NAMED_IAM --change-set-name $changeset_name --change-set-type $changeset_type --region $REGION" "Changeset creation"
     
     # Wait for changeset
     log_info "Waiting for changeset to be created..."
