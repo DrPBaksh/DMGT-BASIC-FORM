@@ -22,11 +22,11 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Configuration with defaults
-ENVIRONMENT=${ENVIRONMENT:-prod}
+ENVIRONMENT=${ENVIRONMENT:-dev}
 STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
-REGION=${AWS_REGION:-us-east-1}
+REGION=${AWS_REGION:-eu-west-2}
 BUCKET_PREFIX="dmgt-basic-form"
-VERBOSE=${VERBOSE:-false}
+VERBOSE=${VERBOSE:-true}
 DRY_RUN=${DRY_RUN:-false}
 
 # Global variables for tracking
