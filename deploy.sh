@@ -7,7 +7,7 @@ set -e
 
 # Script configuration
 SCRIPT_NAME="DMGT Deploy"
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 START_TIME=$(date +%s)
 
 # Color codes for better visibility
@@ -359,6 +359,12 @@ get_stack_outputs() {
         --query "Stacks[0].Outputs[?OutputKey=='WebsiteURL'].OutputValue" \
         --output text)
     
+    CLOUDFRONT_DOMAIN=$(aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDomainName'].OutputValue" \
+        --output text)
+    
     # Validate outputs
     if [ -z "$CONFIG_BUCKET" ] || [ "$CONFIG_BUCKET" = "None" ]; then
         log_error "Failed to retrieve Config Bucket name"
@@ -452,29 +458,37 @@ EOF
     log_info "Uploading React app to S3..."
     execute_command "aws s3 sync build/ s3://$WEBSITE_BUCKET --delete --region $REGION" "React app S3 upload"
     
-    # Get CloudFront distribution ID
-    log_info "Getting CloudFront distribution ID..."
-    local distribution_id=$(aws cloudformation describe-stacks \
-        --stack-name $STACK_NAME \
-        --region $REGION \
-        --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDomainName'].OutputValue" \
-        --output text | cut -d'.' -f1)
-    
-    if [ ! -z "$distribution_id" ] && [ "$distribution_id" != "None" ]; then
-        log_info "Invalidating CloudFront cache..."
-        local invalidation_id=$(aws cloudfront create-invalidation \
-            --distribution-id $distribution_id \
-            --paths "/*" \
-            --query 'Invalidation.Id' \
-            --output text)
+    # Get CloudFront distribution ID for cache invalidation
+    log_info "Getting CloudFront distribution ID for cache invalidation..."
+    local distribution_id=""
+    if [ ! -z "$CLOUDFRONT_DOMAIN" ] && [ "$CLOUDFRONT_DOMAIN" != "None" ]; then
+        # Extract distribution ID from domain name or use CloudFormation to get it
+        distribution_id=$(aws cloudformation describe-stack-resources \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution'].PhysicalResourceId" \
+            --output text 2>/dev/null || echo "")
         
-        if [ $? -eq 0 ]; then
-            log_success "CloudFront invalidation created: $invalidation_id"
+        if [ ! -z "$distribution_id" ] && [ "$distribution_id" != "None" ]; then
+            log_info "CloudFront Distribution ID: $distribution_id"
+            log_info "Creating CloudFront cache invalidation..."
+            local invalidation_id=$(aws cloudfront create-invalidation \
+                --distribution-id $distribution_id \
+                --paths "/*" \
+                --query 'Invalidation.Id' \
+                --output text 2>/dev/null || echo "")
+            
+            if [ ! -z "$invalidation_id" ] && [ "$invalidation_id" != "None" ]; then
+                log_success "CloudFront invalidation created: $invalidation_id"
+                log_info "Cache invalidation will complete in 10-15 minutes"
+            else
+                log_warning "CloudFront invalidation failed (non-critical)"
+            fi
         else
-            log_warning "CloudFront invalidation failed (non-critical)"
+            log_warning "Could not determine CloudFront distribution ID for cache invalidation"
         fi
     else
-        log_warning "Could not determine CloudFront distribution ID"
+        log_warning "CloudFront domain not available for cache invalidation"
     fi
     
     cd ..
@@ -490,39 +504,79 @@ test_deployment() {
     
     local test_start_time=$(date +%s)
     
-    # Test API endpoint
-    log_info "Testing API Gateway endpoint..."
+    # Test API endpoint - Company Configuration
+    log_info "Testing API Gateway endpoint - Company Configuration..."
     local api_test_url="$API_URL/config/Company"
     log_debug "Testing URL: $api_test_url"
     
-    local api_response=$(curl -s -w "%{http_code}" -o /tmp/api_test.json "$api_test_url")
+    local api_response=$(curl -s -w "%{http_code}" -o /tmp/api_test.json "$api_test_url" 2>/dev/null || echo "000")
     if [ "$api_response" = "200" ]; then
-        log_success "API endpoint is responding correctly"
+        log_success "✅ Company API endpoint is responding correctly"
         if [ "$VERBOSE" = "true" ]; then
             log_debug "API Response: $(cat /tmp/api_test.json | head -c 200)..."
         fi
     else
-        log_warning "API endpoint returned HTTP $api_response"
+        log_warning "⚠️ Company API endpoint returned HTTP $api_response"
+        if [ -f /tmp/api_test.json ]; then
+            log_debug "Response: $(cat /tmp/api_test.json)"
+        fi
     fi
     
-    # Test website
-    log_info "Testing CloudFront website..."
+    # Test API endpoint - Employee Configuration
+    log_info "Testing API Gateway endpoint - Employee Configuration..."
+    local api_test_url_employee="$API_URL/config/Employee"
+    log_debug "Testing URL: $api_test_url_employee"
+    
+    local api_response_employee=$(curl -s -w "%{http_code}" -o /tmp/api_test_employee.json "$api_test_url_employee" 2>/dev/null || echo "000")
+    if [ "$api_response_employee" = "200" ]; then
+        log_success "✅ Employee API endpoint is responding correctly"
+        if [ "$VERBOSE" = "true" ]; then
+            log_debug "API Response: $(cat /tmp/api_test_employee.json | head -c 200)..."
+        fi
+    else
+        log_warning "⚠️ Employee API endpoint returned HTTP $api_response_employee"
+        if [ -f /tmp/api_test_employee.json ]; then
+            log_debug "Response: $(cat /tmp/api_test_employee.json)"
+        fi
+    fi
+    
+    # Test website accessibility
+    log_info "Testing CloudFront website accessibility..."
     log_debug "Testing URL: $CLOUDFRONT_URL"
     
-    local website_response=$(curl -s -w "%{http_code}" -o /dev/null "$CLOUDFRONT_URL")
+    local website_response=$(curl -s -w "%{http_code}" -o /tmp/website_test.html "$CLOUDFRONT_URL" 2>/dev/null || echo "000")
     if [ "$website_response" = "200" ]; then
-        log_success "Website is accessible"
+        log_success "✅ Website is accessible via CloudFront"
+        # Check if it's actually the React app by looking for React-specific content
+        if grep -q "react" /tmp/website_test.html 2>/dev/null || grep -q "root" /tmp/website_test.html 2>/dev/null; then
+            log_success "✅ React application is properly served"
+        else
+            log_warning "⚠️ Website accessible but may not be the React app"
+        fi
     else
-        log_warning "Website returned HTTP $website_response"
+        log_warning "⚠️ Website returned HTTP $website_response"
+        if [ -f /tmp/website_test.html ]; then
+            log_debug "Response sample: $(head -c 200 /tmp/website_test.html)"
+        fi
     fi
     
     # Test S3 bucket access
-    log_info "Testing S3 bucket access..."
+    log_info "Testing S3 bucket accessibility..."
     local bucket_test=$(aws s3 ls s3://$CONFIG_BUCKET --region $REGION 2>/dev/null | wc -l)
     if [ $bucket_test -gt 0 ]; then
-        log_success "S3 configuration bucket accessible ($bucket_test files)"
+        log_success "✅ S3 configuration bucket accessible ($bucket_test files)"
     else
-        log_warning "S3 configuration bucket may be empty or inaccessible"
+        log_warning "⚠️ S3 configuration bucket may be empty or inaccessible"
+    fi
+    
+    # Test responses endpoint
+    log_info "Testing responses endpoint availability..."
+    local responses_test_url="$API_URL/responses?companyId=TEST"
+    local responses_response=$(curl -s -w "%{http_code}" -o /tmp/responses_test.json "$responses_test_url" 2>/dev/null || echo "000")
+    if [ "$responses_response" = "200" ]; then
+        log_success "✅ Responses API endpoint is working"
+    else
+        log_warning "⚠️ Responses API endpoint returned HTTP $responses_response"
     fi
     
     local test_end_time=$(date +%s)
@@ -530,7 +584,7 @@ test_deployment() {
     log_success "Deployment testing completed in ${test_duration}s"
 }
 
-# Deployment summary
+# Enhanced deployment summary with prominent URL display
 deployment_summary() {
     log_step "Deployment Summary"
     
@@ -541,6 +595,25 @@ deployment_summary() {
     
     echo -e "\n${BOLD}${GREEN}🎉 DEPLOYMENT COMPLETED SUCCESSFULLY! 🎉${NC}\n"
     
+    # Prominent URL Display Box
+    echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${CYAN}║                                 🌐 ACCESS URLS                                ║${NC}"
+    echo -e "${BOLD}${CYAN}╠═══════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
+    echo -e "${BOLD}${CYAN}║  📱 Application Website:                                                      ║${NC}"
+    echo -e "${BOLD}${CYAN}║     ${GREEN}${CLOUDFRONT_URL}${CYAN}                    ║${NC}"
+    echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
+    echo -e "${BOLD}${CYAN}║  🔗 API Gateway Endpoints:                                                    ║${NC}"
+    echo -e "${BOLD}${CYAN}║     ${GREEN}${API_URL}${CYAN}                ║${NC}"
+    echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
+    echo -e "${BOLD}${CYAN}║  📋 Test API Endpoints:                                                       ║${NC}"
+    echo -e "${BOLD}${CYAN}║     Company Config: ${GREEN}${API_URL}/config/Company${CYAN}         ║${NC}"
+    echo -e "${BOLD}${CYAN}║     Employee Config: ${GREEN}${API_URL}/config/Employee${CYAN}        ║${NC}"
+    echo -e "${BOLD}${CYAN}║     Company Status: ${GREEN}${API_URL}/responses?companyId=TEST${CYAN}   ║${NC}"
+    echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
+    echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
     echo -e "${BOLD}📋 Deployment Summary:${NC}"
     echo -e "Environment: ${CYAN}$ENVIRONMENT${NC}"
     echo -e "Stack Name: ${CYAN}$STACK_NAME${NC}"
@@ -548,24 +621,22 @@ deployment_summary() {
     echo -e "Duration: ${CYAN}${minutes}m ${seconds}s${NC}"
     echo ""
     
-    echo -e "${BOLD}🌐 Access URLs:${NC}"
-    echo -e "Website: ${GREEN}$CLOUDFRONT_URL${NC}"
-    echo -e "API: ${GREEN}$API_URL${NC}"
-    echo ""
-    
-    echo -e "${BOLD}📚 Resources Created:${NC}"
+    echo -e "${BOLD}📚 AWS Resources Created:${NC}"
     echo -e "• CloudFormation Stack: ${CYAN}$STACK_NAME${NC}"
     echo -e "• S3 Config Bucket: ${CYAN}$CONFIG_BUCKET${NC}"
     echo -e "• S3 Website Bucket: ${CYAN}$WEBSITE_BUCKET${NC}"
     echo -e "• API Gateway: ${CYAN}$(echo $API_URL | cut -d'/' -f3)${NC}"
-    echo -e "• CloudFront Distribution: ${CYAN}$(echo $CLOUDFRONT_URL | cut -d'/' -f3)${NC}"
+    echo -e "• CloudFront Distribution: ${CYAN}$CLOUDFRONT_DOMAIN${NC}"
     echo ""
     
     echo -e "${BOLD}📝 Next Steps:${NC}"
-    echo -e "1. ${WHITE}Access your application at: ${GREEN}$CLOUDFRONT_URL${NC}"
-    echo -e "2. ${WHITE}Share Company IDs with your clients${NC}"
-    echo -e "3. ${WHITE}Monitor CloudWatch logs: ${CYAN}aws logs describe-log-groups --region $REGION${NC}"
-    echo -e "4. ${WHITE}Edit questions: Update CSV files in S3 bucket ${CYAN}$CONFIG_BUCKET${NC}"
+    echo -e "1. ${WHITE}📱 Access your application: ${GREEN}$CLOUDFRONT_URL${NC}"
+    echo -e "2. ${WHITE}🔗 Test the API endpoints using the URLs above${NC}"
+    echo -e "3. ${WHITE}📨 Share Company IDs with your clients${NC}"
+    echo -e "4. ${WHITE}📊 Monitor CloudWatch logs:${NC}"
+    echo -e "   ${CYAN}aws logs describe-log-groups --region $REGION --name-prefix /aws/lambda/dmgt-basic-form${NC}"
+    echo -e "5. ${WHITE}✏️ Edit questions: Update CSV files in S3 bucket ${CYAN}$CONFIG_BUCKET${NC}"
+    echo -e "6. ${WHITE}🗂️ Access form responses in S3 bucket: ${CYAN}$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" --output text)${NC}"
     echo ""
     
     if [ ${#ERRORS[@]} -gt 0 ]; then
@@ -577,6 +648,14 @@ deployment_summary() {
     fi
     
     echo -e "${BOLD}🏷️  All resources tagged with: ${CYAN}Project=dmgt-basic-form${NC}"
+    echo -e "${BOLD}🚀 Ready to collect data and AI readiness assessments!${NC}"
+    echo ""
+    
+    # Quick test suggestions
+    echo -e "${BOLD}🧪 Quick Tests:${NC}"
+    echo -e "• ${WHITE}curl \"${API_URL}/config/Company\"${NC}"
+    echo -e "• ${WHITE}curl \"${API_URL}/config/Employee\"${NC}"
+    echo -e "• ${WHITE}curl \"${API_URL}/responses?companyId=TEST\"${NC}"
     echo ""
 }
 

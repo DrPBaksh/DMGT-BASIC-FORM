@@ -7,7 +7,7 @@ set -e
 
 # Script configuration
 SCRIPT_NAME="DMGT Destroy"
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 START_TIME=$(date +%s)
 
 # Color codes for better visibility
@@ -299,7 +299,7 @@ discover_resources() {
     return 0
 }
 
-# Function to check for orphaned resources
+# Enhanced function to check for orphaned resources
 check_orphaned_resources() {
     log_info "Scanning for orphaned DMGT resources..."
     
@@ -307,18 +307,41 @@ check_orphaned_resources() {
     local buckets=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'dmgt-basic-form')].Name" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$buckets" ]; then
         log_warning "Found potential orphaned S3 buckets: $buckets"
+        # Store for cleanup
+        ORPHANED_BUCKETS=($buckets)
     fi
     
     # Check for Lambda functions
     local functions=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'dmgt-basic-form')].FunctionName" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$functions" ]; then
         log_warning "Found potential orphaned Lambda functions: $functions"
+        ORPHANED_FUNCTIONS=($functions)
     fi
     
     # Check for API Gateways
-    local apis=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].name" --output text --region $REGION 2>/dev/null || echo "")
+    local apis=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].{name:name,id:id}" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$apis" ]; then
         log_warning "Found potential orphaned API Gateways: $apis"
+        ORPHANED_APIS=($apis)
+    fi
+    
+    # Check for CloudFront distributions
+    local distributions=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Comment, 'dmgt-basic-form')].{Id:Id,DomainName:DomainName,Comment:Comment}" --output text 2>/dev/null || echo "")
+    if [ ! -z "$distributions" ]; then
+        log_warning "Found potential orphaned CloudFront distributions:"
+        echo "$distributions" | while read -r id domain comment; do
+            if [ ! -z "$id" ]; then
+                log_warning "  Distribution ID: $id, Domain: $domain"
+                ORPHANED_DISTRIBUTIONS+=("$id")
+            fi
+        done
+    fi
+    
+    # Check for IAM roles
+    local roles=$(aws iam list-roles --query "Roles[?contains(RoleName, 'dmgt-basic-form')].RoleName" --output text --region $REGION 2>/dev/null || echo "")
+    if [ ! -z "$roles" ]; then
+        log_warning "Found potential orphaned IAM roles: $roles"
+        ORPHANED_ROLES=($roles)
     fi
 }
 
@@ -335,13 +358,13 @@ discover_buckets_by_name() {
     log_debug "Predicted Responses Bucket: $RESPONSES_BUCKET"
 }
 
-# Enhanced S3 bucket cleanup
+# Enhanced S3 bucket cleanup with orphaned resource handling
 empty_s3_buckets() {
     log_step "Emptying S3 Buckets"
     
     local buckets_to_empty=()
     
-    # Collect existing buckets
+    # Collect existing buckets from stack
     for bucket in "$CONFIG_BUCKET" "$WEBSITE_BUCKET" "$RESPONSES_BUCKET"; do
         if [ ! -z "$bucket" ] && [ "$bucket" != "None" ]; then
             # Check if bucket exists
@@ -353,6 +376,16 @@ empty_s3_buckets() {
             fi
         fi
     done
+    
+    # Add orphaned buckets if any
+    if [ ! -z "$ORPHANED_BUCKETS" ]; then
+        for bucket in "${ORPHANED_BUCKETS[@]}"; do
+            if [ ! -z "$bucket" ]; then
+                buckets_to_empty+=("$bucket")
+                log_info "Adding orphaned bucket: $bucket"
+            fi
+        done
+    fi
     
     if [ ${#buckets_to_empty[@]} -eq 0 ]; then
         log_success "No S3 buckets found to empty"
@@ -496,7 +529,7 @@ delete_stack() {
     log_success "Stack deletion completed in ${deletion_duration}s"
 }
 
-# Enhanced verification and cleanup
+# Enhanced verification and cleanup with orphaned resource handling
 verify_destruction() {
     log_step "Verifying Complete Destruction"
     
@@ -511,9 +544,14 @@ verify_destruction() {
         log_success "CloudFormation stack successfully deleted"
     fi
     
-    # Check S3 buckets
+    # Check S3 buckets (including orphaned ones)
     log_info "Verifying S3 bucket deletion..."
-    for bucket in "$CONFIG_BUCKET" "$WEBSITE_BUCKET" "$RESPONSES_BUCKET"; do
+    local all_buckets=("$CONFIG_BUCKET" "$WEBSITE_BUCKET" "$RESPONSES_BUCKET")
+    if [ ! -z "$ORPHANED_BUCKETS" ]; then
+        all_buckets+=("${ORPHANED_BUCKETS[@]}")
+    fi
+    
+    for bucket in "${all_buckets[@]}"; do
         if [ ! -z "$bucket" ] && [ "$bucket" != "None" ]; then
             if aws s3api head-bucket --bucket "$bucket" --region $REGION > /dev/null 2>&1; then
                 log_warning "S3 bucket still exists: $bucket"
@@ -535,8 +573,65 @@ verify_destruction() {
         fi
     done
     
-    # Check for orphaned resources
-    log_info "Scanning for remaining DMGT resources..."
+    # Check and clean up orphaned Lambda functions
+    if [ ! -z "$ORPHANED_FUNCTIONS" ]; then
+        log_info "Cleaning up orphaned Lambda functions..."
+        for func in "${ORPHANED_FUNCTIONS[@]}"; do
+            if [ ! -z "$func" ]; then
+                log_info "Deleting orphaned Lambda function: $func"
+                execute_command "aws lambda delete-function --function-name $func --region $REGION" "Delete orphaned Lambda $func" "true"
+            fi
+        done
+    fi
+    
+    # Check and clean up orphaned API Gateways
+    if [ ! -z "$ORPHANED_APIS" ]; then
+        log_info "Cleaning up orphaned API Gateways..."
+        local api_ids=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].id" --output text --region $REGION 2>/dev/null || echo "")
+        if [ ! -z "$api_ids" ]; then
+            for api_id in $api_ids; do
+                if [ ! -z "$api_id" ]; then
+                    log_info "Deleting orphaned API Gateway: $api_id"
+                    execute_command "aws apigateway delete-rest-api --rest-api-id $api_id --region $REGION" "Delete orphaned API Gateway $api_id" "true"
+                fi
+            done
+        fi
+    fi
+    
+    # Check and clean up orphaned CloudFront distributions
+    local remaining_distributions=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Comment, 'dmgt-basic-form')].{Id:Id,Status:Status}" --output text 2>/dev/null || echo "")
+    if [ ! -z "$remaining_distributions" ]; then
+        log_warning "Found remaining CloudFront distributions:"
+        echo "$remaining_distributions" | while read -r id status; do
+            if [ ! -z "$id" ] && [ "$id" != "None" ]; then
+                log_warning "CloudFront Distribution $id (Status: $status) - requires manual deletion"
+                log_info "To delete: First disable, then delete when status is 'Deployed'"
+                log_info "aws cloudfront get-distribution-config --id $id"
+                log_info "aws cloudfront update-distribution --id $id --distribution-config <config-with-enabled-false>"
+                log_info "aws cloudfront delete-distribution --id $id --if-match <etag>"
+                verification_errors=$((verification_errors + 1))
+            fi
+        done
+    fi
+    
+    # Check and clean up orphaned IAM roles
+    if [ ! -z "$ORPHANED_ROLES" ]; then
+        log_info "Cleaning up orphaned IAM roles..."
+        for role in "${ORPHANED_ROLES[@]}"; do
+            if [ ! -z "$role" ]; then
+                log_info "Deleting orphaned IAM role: $role"
+                # First detach policies
+                execute_command "aws iam list-attached-role-policies --role-name $role --region $REGION --query 'AttachedPolicies[].PolicyArn' --output text | xargs -r -n1 aws iam detach-role-policy --role-name $role --policy-arn" "Detach policies from $role" "true"
+                # Delete inline policies
+                execute_command "aws iam list-role-policies --role-name $role --region $REGION --query 'PolicyNames[]' --output text | xargs -r -n1 aws iam delete-role-policy --role-name $role --policy-name" "Delete inline policies from $role" "true"
+                # Delete role
+                execute_command "aws iam delete-role --role-name $role --region $REGION" "Delete orphaned IAM role $role" "true"
+            fi
+        done
+    fi
+    
+    # Final scan for any remaining resources
+    log_info "Final scan for remaining DMGT resources..."
     
     # Lambda functions
     local remaining_functions=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'dmgt-basic-form')].FunctionName" --output text --region $REGION 2>/dev/null || echo "")
@@ -687,6 +782,13 @@ main() {
         show_usage
         exit 0
     fi
+    
+    # Initialize arrays for orphaned resources
+    ORPHANED_BUCKETS=()
+    ORPHANED_FUNCTIONS=()
+    ORPHANED_APIS=()
+    ORPHANED_DISTRIBUTIONS=()
+    ORPHANED_ROLES=()
     
     # Script header
     echo -e "${BOLD}${RED}"
