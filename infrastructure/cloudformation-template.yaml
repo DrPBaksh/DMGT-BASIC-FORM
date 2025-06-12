@@ -73,7 +73,7 @@ Resources:
             Effect: Allow
             Principal: '*'
             Action: s3:GetObject
-            Resource: !Sub '${DMGTFormWebsiteBucket}/*'
+            Resource: !Sub 'arn:aws:s3:::${DMGTFormWebsiteBucket}/*'
 
   # IAM Role for Lambda Functions
   DMGTFormLambdaRole:
