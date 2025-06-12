@@ -34,6 +34,13 @@ STEP_COUNT=0
 TOTAL_STEPS=8
 ERRORS=()
 
+# Function to create separator line
+separator_line() {
+    printf "${BLUE}"
+    printf '=%.0s' {1..80}
+    printf "${NC}\n"
+}
+
 # Logging functions
 log_info() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -67,7 +74,7 @@ log_step() {
     STEP_COUNT=$((STEP_COUNT + 1))
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "\n${BOLD}${BLUE}[STEP $STEP_COUNT/$TOTAL_STEPS]${NC} ${timestamp} - $1"
-    echo -e "${BLUE}${'='*80}${NC}"
+    separator_line
 }
 
 # Progress bar function
@@ -142,9 +149,9 @@ check_aws_cli() {
         exit 1
     fi
     
-    local caller_identity=$(aws sts get-caller-identity --output json)
-    local account_id=$(echo $caller_identity | jq -r '.Account')
-    local user_arn=$(echo $caller_identity | jq -r '.Arn')
+    local caller_identity=$(aws sts get-caller-identity --output json 2>/dev/null)
+    local account_id=$(echo $caller_identity | grep -o '"Account":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
+    local user_arn=$(echo $caller_identity | grep -o '"Arn":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
     
     log_success "AWS credentials valid"
     log_debug "Account ID: $account_id"
@@ -616,9 +623,10 @@ main() {
     
     # Script header
     echo -e "${BOLD}${BLUE}"
-    echo "========================================================================"
+    printf '=%.0s' {1..72}
+    echo ""
     echo "  $SCRIPT_NAME v$SCRIPT_VERSION - Enhanced Deployment Script"
-    echo "========================================================================"
+    printf '=%.0s' {1..72}
     echo -e "${NC}"
     
     log_info "Starting deployment of DMGT Basic Form"
