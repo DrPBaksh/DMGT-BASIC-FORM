@@ -8,7 +8,7 @@ set -e
 # Configuration
 ENVIRONMENT=${ENVIRONMENT:-prod}
 STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
-REGION=${AWS_REGION:-us-east-1}
+REGION=${AWS_REGION:-eu-west-2}
 BUCKET_PREFIX="dmgt-basic-form"
 
 echo "🚀 Starting deployment of DMGT Basic Form..."
