@@ -101,10 +101,10 @@ Resources:
                   - s3:DeleteObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub '${DMGTFormConfigBucket}/*'
-                  - !Sub '${DMGTFormResponsesBucket}/*'
-                  - !Ref DMGTFormConfigBucket
-                  - !Ref DMGTFormResponsesBucket
+                  - !Sub 'arn:aws:s3:::${DMGTFormConfigBucket}'
+                  - !Sub 'arn:aws:s3:::${DMGTFormConfigBucket}/*'
+                  - !Sub 'arn:aws:s3:::${DMGTFormResponsesBucket}'
+                  - !Sub 'arn:aws:s3:::${DMGTFormResponsesBucket}/*'
       Tags:
         - Key: Project
           Value: dmgt-basic-form
