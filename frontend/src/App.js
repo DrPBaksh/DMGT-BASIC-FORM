@@ -18,7 +18,7 @@ function App() {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [saveStatus, setSaveStatus] = useState(''); // 'saving', 'saved', 'error'
   
-  // Employee session management - Enhanced
+  // Employee session management - Fixed logic
   const [employeeSessionMode, setEmployeeSessionMode] = useState(null); // 'new' or 'returning'
   const [currentEmployeeId, setCurrentEmployeeId] = useState(null);
   const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
@@ -29,34 +29,48 @@ function App() {
     { id: 'employee', label: 'Employee Assessment', icon: '👤' }
   ];
 
+  // Fixed: Separate useEffect for loading questions with better dependency management
   useEffect(() => {
-    if (companyId && activeTab) {
-      if (activeTab === 'company' || (activeTab === 'employee' && employeeSessionReady)) {
-        loadQuestions();
-        checkCompanyStatus();
-      }
+    const shouldLoadQuestions = () => {
+      if (!companyId || !activeTab) return false;
+      
+      if (activeTab === 'company') return true;
+      if (activeTab === 'employee' && employeeSessionReady) return true;
+      
+      return false;
+    };
+
+    if (shouldLoadQuestions()) {
+      loadQuestions();
+      checkCompanyStatus();
     }
   }, [activeTab, companyId, employeeSessionReady]);
 
-  // Enhanced session persistence
+  // Fixed: Enhanced session persistence tracking
   useEffect(() => {
     if (employeeSessionMode === 'new' && currentEmployeeId !== null && !sessionPersisted) {
       setSessionPersisted(true);
+      console.log(`New employee session persisted with ID: ${currentEmployeeId}`);
     }
   }, [currentEmployeeId, employeeSessionMode, sessionPersisted]);
 
   const loadQuestions = async () => {
     setLoading(true);
+    console.log(`Loading questions for activeTab: ${activeTab}, companyId: ${companyId}`);
+    
     try {
       const response = await fetch(`${API_BASE_URL}/config/${activeTab}`);
       if (response.ok) {
         const data = await response.json();
         setQuestions(data);
+        console.log(`Loaded ${data.length} questions for ${activeTab}`);
       } else {
-        console.error('Failed to load questions');
+        console.error('Failed to load questions:', response.status);
+        alert('Failed to load questions. Please check your connection and try again.');
       }
     } catch (error) {
       console.error('Error loading questions:', error);
+      alert('Error loading questions. Please check your connection and try again.');
     }
     setLoading(false);
   };
@@ -68,6 +82,7 @@ function App() {
         if (response.ok) {
           const status = await response.json();
           setCompanyStatus(status);
+          console.log('Company status updated:', status);
         }
       } catch (error) {
         console.error('Error checking company status:', error);
@@ -77,6 +92,7 @@ function App() {
 
   const loadEmployeeData = async (employeeId) => {
     try {
+      console.log(`Loading employee data for ID: ${employeeId}`);
       const response = await fetch(`${API_BASE_URL}/responses?action=getEmployee&companyId=${companyId}&employeeId=${employeeId}`);
       if (response.ok) {
         const data = await response.json();
@@ -84,6 +100,7 @@ function App() {
           setResponses(data.responses || {});
           setCurrentEmployeeId(employeeId);
           setSessionPersisted(true); // Existing employee session is already persisted
+          console.log(`Employee data loaded for ID: ${employeeId}`);
           return data.employeeData;
         }
       }
@@ -94,7 +111,7 @@ function App() {
     }
   };
 
-  // Enhanced saveResponse function - Fixed the main bug
+  // Fixed: Enhanced saveResponse function with better error handling
   const saveResponse = async (questionId, answer, file = null) => {
     const newResponses = { ...responses, [questionId]: answer };
     setResponses(newResponses);
@@ -107,20 +124,18 @@ function App() {
         responses: newResponses
       };
 
-      // Critical fix: For employee forms, handle session management properly
+      // Fixed: Better employee session handling
       if (activeTab === 'employee') {
-        // If we have an established employee session, use that ID
         if (currentEmployeeId !== null) {
+          // Returning employee or new employee with assigned ID
           payload.employeeId = currentEmployeeId;
+          console.log(`Saving for existing employee ID: ${currentEmployeeId}`);
         } else if (employeeSessionMode === 'new') {
-          // For new employees, don't send employeeId on first save - let backend assign
-          // This ensures we don't create multiple employee IDs
+          // New employee, first save - let backend assign ID
           payload.isNewEmployee = true;
+          console.log('Saving for new employee - requesting ID assignment');
         } else {
-          // This shouldn't happen, but handle gracefully
-          console.error('Employee session not properly initialized');
-          setSaveStatus('error');
-          return;
+          throw new Error('Employee session not properly initialized');
         }
       }
 
@@ -134,26 +149,30 @@ function App() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        if (errorData.error.includes('already completed')) {
+        if (errorData.error && errorData.error.includes('already completed')) {
           alert('Company questionnaire has already been completed for this Company ID.');
           setSaveStatus('error');
           return;
         }
-        throw new Error(errorData.error);
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
       const responseData = await response.json();
 
-      // Critical fix: For new employees, capture and store the assigned employee ID
+      // Fixed: Capture employee ID for new employees
       if (activeTab === 'employee' && employeeSessionMode === 'new' && currentEmployeeId === null) {
         if (responseData.employeeId !== undefined) {
           setCurrentEmployeeId(responseData.employeeId);
           setSessionPersisted(true);
-          console.log(`New employee session established with ID: ${responseData.employeeId}`);
+          console.log(`New employee ID assigned: ${responseData.employeeId}`);
+          
+          // Update company status to reflect new employee
+          await checkCompanyStatus();
         }
       }
 
       setSaveStatus('saved');
+      console.log('Response saved successfully');
       
       // Auto-clear save status after a moment
       setTimeout(() => setSaveStatus(''), 2000);
@@ -161,10 +180,10 @@ function App() {
     } catch (error) {
       console.error('Error saving response:', error);
       setSaveStatus('error');
-      alert('Error saving response. Please try again.');
+      alert(`Error saving response: ${error.message}. Please try again.`);
       
       // Auto-clear error status
-      setTimeout(() => setSaveStatus(''), 3000);
+      setTimeout(() => setSaveStatus(''), 5000);
     }
   };
 
@@ -174,10 +193,12 @@ function App() {
       return;
     }
     
+    console.log(`Switching to tab: ${tabId}`);
     setActiveTab(tabId);
     setResponses({});
     setCurrentQuestionIndex(0);
     setSaveStatus('');
+    setQuestions([]); // Clear questions when switching tabs
     
     // Reset employee session when switching tabs
     if (tabId === 'employee') {
@@ -185,13 +206,17 @@ function App() {
       setCurrentEmployeeId(null);
       setEmployeeSessionReady(false);
       setSessionPersisted(false);
+      console.log('Employee session reset for new tab');
     } else {
       setEmployeeSessionReady(true);
     }
   };
 
   const handleCompanyIdChange = (e) => {
-    setCompanyId(e.target.value);
+    const newCompanyId = e.target.value;
+    setCompanyId(newCompanyId);
+    console.log(`Company ID changed to: ${newCompanyId}`);
+    
     // Reset everything when company ID changes
     setEmployeeSessionMode(null);
     setCurrentEmployeeId(null);
@@ -199,10 +224,13 @@ function App() {
     setSessionPersisted(false);
     setResponses({});
     setSaveStatus('');
+    setQuestions([]);
   };
 
-  // Enhanced employee session setup
+  // Fixed: Enhanced employee session setup with better state management
   const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
+    console.log(`Setting up employee session: mode=${mode}, employeeId=${employeeId}`);
+    
     setEmployeeSessionMode(mode);
     setSaveStatus('');
     
@@ -210,9 +238,13 @@ function App() {
       setCurrentEmployeeId(null); // Will be assigned on first save
       setResponses({});
       setSessionPersisted(false);
+      
+      // Fixed: Set session ready immediately for new employees
       setEmployeeSessionReady(true);
-      console.log('New employee session initialized');
+      console.log('New employee session initialized - ready to load questions');
+      
     } else if (mode === 'returning' && employeeId !== null) {
+      console.log(`Loading returning employee data for ID: ${employeeId}`);
       const employeeData = await loadEmployeeData(employeeId);
       if (employeeData) {
         setEmployeeSessionReady(true);
@@ -222,6 +254,7 @@ function App() {
         setEmployeeSessionMode(null);
         setCurrentEmployeeId(null);
         setSessionPersisted(false);
+        setEmployeeSessionReady(false);
       }
     }
   };
@@ -252,6 +285,8 @@ function App() {
   };
 
   const renderEmployeeSection = () => {
+    console.log(`Rendering employee section - sessionReady: ${employeeSessionReady}, mode: ${employeeSessionMode}`);
+    
     if (!employeeSessionReady) {
       return (
         <EmployeeSessionManager
@@ -307,6 +342,7 @@ function App() {
           ) : (
             <div className="empty-state">
               <p>No questions available for this form type.</p>
+              <p>Please ensure you have a valid Company ID and try refreshing the page.</p>
             </div>
           )}
         </div>
@@ -384,6 +420,7 @@ function App() {
                     ) : (
                       <div className="empty-state">
                         <p>No questions available for this form type.</p>
+                        <p>Please ensure you have a valid Company ID and try refreshing the page.</p>
                       </div>
                     )}
                   </div>
