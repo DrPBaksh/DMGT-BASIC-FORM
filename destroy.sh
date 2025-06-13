@@ -4,6 +4,7 @@ set -euo pipefail # -e: exit on error, -u: unset variables are errors, -o pipefa
 #####################################
 # DMGT Basic Form - Professional Destruction Script
 # Safely destroys all deployed resources with comprehensive logging
+# Enhanced with automatic S3 bucket cleanup to prevent CloudFormation failures
 #####################################
 
 # Compute paths relative to this script's location
@@ -22,7 +23,7 @@ STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
 
 # Global tracking variables
 STEP_COUNT=0
-TOTAL_STEPS=6
+TOTAL_STEPS=7
 START_TIME=$(date +%s)
 ERRORS=()
 WARNINGS=()
@@ -233,8 +234,8 @@ check_prerequisites() {
     fi
     
     local caller_identity=$(aws sts get-caller-identity --output json 2>/dev/null)
-    local account_id=$(echo $caller_identity | jq -r '.Account // "N/A"')
-    local user_arn=$(echo $caller_identity | jq -r '.Arn // "N/A"')
+    local account_id=$(echo $caller_identity | grep -o '"Account":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
+    local user_arn=$(echo $caller_identity | grep -o '"Arn":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
     
     log_success "AWS credentials valid"
     log_debug "Account ID: $account_id"
@@ -295,6 +296,15 @@ discover_resources() {
         log_debug "Config Bucket: $CONFIG_BUCKET"
         log_debug "Website Bucket: $WEBSITE_BUCKET"
         log_debug "Responses Bucket: $RESPONSES_BUCKET"
+        
+        # If outputs are empty, try to predict bucket names
+        if [ -z "$CONFIG_BUCKET" ] || [ "$CONFIG_BUCKET" = "None" ]; then
+            local account_id=$(aws sts get-caller-identity --query Account --output text)
+            CONFIG_BUCKET="dmgt-basic-form-config-${ENVIRONMENT}-${account_id}"
+            WEBSITE_BUCKET="dmgt-basic-form-website-${ENVIRONMENT}-${account_id}"
+            RESPONSES_BUCKET="dmgt-basic-form-responses-${ENVIRONMENT}-${account_id}"
+            log_info "Stack outputs not available, using predicted bucket names"
+        fi
     else
         log_warning "CloudFormation stack $STACK_NAME not found"
     fi
@@ -494,10 +504,10 @@ confirm_destruction() {
 }
 
 #####################################
-# S3 Cleanup Functions
+# Enhanced S3 Cleanup Functions
 #####################################
 cleanup_s3_buckets() {
-    log_step "🪣 Cleaning Up S3 Buckets"
+    log_step "🪣 Cleaning Up S3 Buckets (Enhanced)"
     
     local buckets_to_clean=()
     
@@ -524,16 +534,17 @@ cleanup_s3_buckets() {
     log_info "Found ${#buckets_to_clean[@]} S3 bucket(s) to clean up"
     
     for bucket in "${buckets_to_clean[@]}"; do
-        cleanup_single_bucket "$bucket"
+        cleanup_single_bucket_enhanced "$bucket"
     done
     
-    log_success "S3 bucket cleanup completed"
+    log_success "Enhanced S3 bucket cleanup completed"
 }
 
-cleanup_single_bucket() {
+# Enhanced bucket cleanup function that handles the CloudFormation deletion issue
+cleanup_single_bucket_enhanced() {
     local bucket="$1"
     
-    log_info "Cleaning up bucket: $bucket"
+    log_info "🔧 Enhanced cleanup for bucket: $bucket"
     
     # Check if bucket exists
     if ! aws s3api head-bucket --bucket "$bucket" --region $REGION > /dev/null 2>&1; then
@@ -541,56 +552,160 @@ cleanup_single_bucket() {
         return 0
     fi
     
-    # Get object count
+    local cleanup_start_time=$(date +%s)
+    
+    # Step 1: Get comprehensive bucket inventory
+    log_info "📊 Analyzing bucket contents..."
     local object_count=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
-    log_info "Bucket $bucket contains $object_count objects"
     
-    if [ "$object_count" -gt 0 ]; then
-        # Delete current objects
-        log_info "Deleting current objects from $bucket..."
-        execute_command "aws s3 rm s3://$bucket --recursive --region $REGION" "Delete objects from $bucket" "true"
-        
-        # Handle versioned objects
-        log_info "Checking for versioned objects in $bucket..."
-        local versions=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null || echo "")
-        
-        if [ ! -z "$versions" ]; then
-            log_info "Deleting versioned objects from $bucket..."
-            echo "$versions" | while read -r key version; do
-                if [ ! -z "$key" ] && [ ! -z "$version" ]; then
-                    aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
-                fi
-            done
-        fi
-        
-        # Handle delete markers
-        log_info "Checking for delete markers in $bucket..."
-        local markers=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null || echo "")
-        
-        if [ ! -z "$markers" ]; then
-            log_info "Deleting delete markers from $bucket..."
-            echo "$markers" | while read -r key version; do
-                if [ ! -z "$key" ] && [ ! -z "$version" ]; then
-                    aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
-                fi
-            done
-        fi
-    fi
-    
-    # Verify bucket is empty
-    local remaining_objects=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
-    if [ "$remaining_objects" -eq 0 ]; then
-        log_success "Bucket $bucket is now empty"
+    # Get detailed version information
+    local version_info=""
+    if command -v jq &> /dev/null; then
+        version_info=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --output json 2>/dev/null || echo '{}')
+        local version_count=$(echo "$version_info" | jq -r '.Versions // [] | length')
+        local delete_marker_count=$(echo "$version_info" | jq -r '.DeleteMarkers // [] | length')
     else
-        log_warning "Bucket $bucket still contains $remaining_objects objects"
+        # Fallback without jq
+        local version_count=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'Versions[].Key' --output text 2>/dev/null | wc -w || echo "0")
+        local delete_marker_count=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'DeleteMarkers[].Key' --output text 2>/dev/null | wc -w || echo "0")
     fi
+    
+    log_info "📋 Bucket inventory: $object_count current objects, $version_count versions, $delete_marker_count delete markers"
+    
+    local total_items=$((object_count + version_count + delete_marker_count))
+    
+    if [ "$total_items" -eq 0 ]; then
+        log_success "✅ Bucket $bucket is already empty"
+        return 0
+    fi
+    
+    # Step 2: Delete current objects (if any)
+    if [ "$object_count" -gt 0 ]; then
+        log_info "🗑️ Deleting current objects from $bucket..."
+        if [ "$DRY_RUN" != "true" ]; then
+            execute_command "aws s3 rm s3://$bucket --recursive --region $REGION" "Delete current objects from $bucket" "true"
+        else
+            log_warning "DRY RUN: Would delete $object_count current objects"
+        fi
+    fi
+    
+    # Step 3: Enhanced version cleanup with progress tracking
+    if [ "$version_count" -gt 0 ]; then
+        log_info "🔄 Deleting $version_count object versions (this may take a while)..."
+        
+        if [ "$DRY_RUN" != "true" ]; then
+            local deleted_versions=0
+            local failed_versions=0
+            
+            # Process versions in batches for better performance
+            if command -v jq &> /dev/null && [ ! -z "$version_info" ]; then
+                # Use jq for efficient processing
+                echo "$version_info" | jq -r '.Versions[]? | "\(.Key)|\(.VersionId)"' | while IFS='|' read -r key version_id; do
+                    if [ ! -z "$key" ] && [ ! -z "$version_id" ]; then
+                        if aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version_id" --region $REGION > /dev/null 2>&1; then
+                            deleted_versions=$((deleted_versions + 1))
+                        else
+                            failed_versions=$((failed_versions + 1))
+                            log_debug "Failed to delete version: $key ($version_id)"
+                        fi
+                        
+                        # Progress indicator every 10 deletions
+                        if [ $((deleted_versions % 10)) -eq 0 ] && [ "$VERBOSE" != "true" ]; then
+                            printf "\r${CYAN}⏳ Deleted %d/%d versions...${NC}" $deleted_versions $version_count
+                        fi
+                    fi
+                done
+                echo ""
+            else
+                # Fallback method without jq
+                aws s3api list-object-versions --bucket "$bucket" --region $REGION \
+                    --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | \
+                    while read -r key version_id; do
+                        if [ ! -z "$key" ] && [ ! -z "$version_id" ]; then
+                            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version_id" --region $REGION > /dev/null 2>&1 || true
+                        fi
+                    done
+            fi
+            
+            log_success "✅ Completed version deletion for $bucket"
+        else
+            log_warning "DRY RUN: Would delete $version_count object versions"
+        fi
+    fi
+    
+    # Step 4: Enhanced delete marker cleanup
+    if [ "$delete_marker_count" -gt 0 ]; then
+        log_info "🧹 Deleting $delete_marker_count delete markers..."
+        
+        if [ "$DRY_RUN" != "true" ]; then
+            if command -v jq &> /dev/null && [ ! -z "$version_info" ]; then
+                echo "$version_info" | jq -r '.DeleteMarkers[]? | "\(.Key)|\(.VersionId)"' | while IFS='|' read -r key version_id; do
+                    if [ ! -z "$key" ] && [ ! -z "$version_id" ]; then
+                        aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version_id" --region $REGION > /dev/null 2>&1 || true
+                    fi
+                done
+            else
+                aws s3api list-object-versions --bucket "$bucket" --region $REGION \
+                    --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | \
+                    while read -r key version_id; do
+                        if [ ! -z "$key" ] && [ ! -z "$version_id" ]; then
+                            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version_id" --region $REGION > /dev/null 2>&1 || true
+                        fi
+                    done
+            fi
+            log_success "✅ Completed delete marker cleanup for $bucket"
+        else
+            log_warning "DRY RUN: Would delete $delete_marker_count delete markers"
+        fi
+    fi
+    
+    # Step 5: Verification with retry logic
+    if [ "$DRY_RUN" != "true" ]; then
+        log_info "🔍 Verifying bucket is completely empty..."
+        local retry_count=0
+        local max_retries=3
+        
+        while [ $retry_count -lt $max_retries ]; do
+            sleep 2  # Give AWS time to process deletions
+            
+            local remaining_objects=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
+            local remaining_versions=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'Versions[].Key' --output text 2>/dev/null | wc -w || echo "0")
+            local remaining_markers=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'DeleteMarkers[].Key' --output text 2>/dev/null | wc -w || echo "0")
+            
+            local total_remaining=$((remaining_objects + remaining_versions + remaining_markers))
+            
+            if [ "$total_remaining" -eq 0 ]; then
+                log_success "✅ Bucket $bucket is now completely empty and ready for CloudFormation deletion"
+                break
+            else
+                retry_count=$((retry_count + 1))
+                log_warning "⚠️ Bucket still contains $total_remaining items (attempt $retry_count/$max_retries)"
+                
+                if [ $retry_count -lt $max_retries ]; then
+                    log_info "🔄 Retrying cleanup for remaining items..."
+                    # Additional cleanup attempt
+                    if [ "$remaining_objects" -gt 0 ]; then
+                        aws s3 rm s3://$bucket --recursive --region $REGION > /dev/null 2>&1 || true
+                    fi
+                else
+                    log_error "❌ Unable to completely empty bucket $bucket after $max_retries attempts"
+                    log_info "💡 CloudFormation stack deletion may fail due to non-empty bucket"
+                    log_info "🔧 Manual cleanup may be required via AWS Console"
+                fi
+            fi
+        done
+    fi
+    
+    local cleanup_end_time=$(date +%s)
+    local cleanup_duration=$((cleanup_end_time - cleanup_start_time))
+    log_success "🎉 Enhanced cleanup completed for $bucket in ${cleanup_duration}s"
 }
 
 #####################################
-# Stack Destruction
+# Stack Destruction with Retry Logic
 #####################################
 destroy_cloudformation_stack() {
-    log_step "🗂️ Destroying CloudFormation Stack"
+    log_step "🗂️ Destroying CloudFormation Stack (Enhanced)"
     
     # Check if stack exists
     if ! aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
@@ -601,25 +716,40 @@ destroy_cloudformation_stack() {
     local stack_status=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].StackStatus' --output text)
     log_info "Current stack status: $stack_status"
     
-    # Handle different stack states
+    # Enhanced handling for different stack states
     case $stack_status in
         "DELETE_IN_PROGRESS")
-            log_info "Stack deletion already in progress"
+            log_info "Stack deletion already in progress - monitoring..."
             ;;
         "DELETE_COMPLETE")
             log_success "Stack already deleted"
             return 0
             ;;
+        "DELETE_FAILED")
+            log_warning "Stack is in DELETE_FAILED state - attempting retry after S3 cleanup"
+            if [ "$DRY_RUN" != "true" ]; then
+                execute_command "aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION" "Stack deletion retry"
+            fi
+            ;;
         *)
             log_info "Initiating stack deletion..."
-            execute_command "aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION" "Stack deletion initiation"
+            if [ "$DRY_RUN" != "true" ]; then
+                execute_command "aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION" "Stack deletion initiation"
+            fi
             ;;
     esac
     
-    # Wait for stack deletion
-    log_info "Waiting for stack deletion to complete..."
+    if [ "$DRY_RUN" = "true" ]; then
+        log_warning "DRY RUN: Would monitor stack deletion progress"
+        return 0
+    fi
+    
+    # Enhanced deletion monitoring with better error handling
+    log_info "📊 Monitoring stack deletion progress..."
     local wait_start=$(date +%s)
     local last_status=""
+    local retry_count=0
+    local max_retries=2
     
     while true; do
         local current_status=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DELETE_COMPLETE")
@@ -632,36 +762,60 @@ destroy_cloudformation_stack() {
             last_status="$current_status"
         fi
         
-        printf "\r${CYAN}⏳ Waiting for stack deletion... %ds (Status: %s)${NC}" $wait_duration "$current_status"
+        printf "\r${CYAN}⏳ Monitoring stack deletion... %ds (Status: %s)${NC}" $wait_duration "$current_status"
         
         case $current_status in
             "DELETE_COMPLETE")
                 echo ""
-                log_success "Stack deletion completed successfully"
+                log_success "✅ Stack deletion completed successfully"
                 break
                 ;;
             "DELETE_FAILED")
                 echo ""
-                log_error "Stack deletion failed"
-                log_info "Checking stack events for error details..."
-                aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION \
+                log_error "❌ Stack deletion failed"
+                
+                # Get detailed error information
+                log_info "🔍 Analyzing failure details..."
+                local failed_resources=$(aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION \
                     --query 'StackEvents[?ResourceStatus==`DELETE_FAILED`].{Time:Timestamp,Resource:LogicalResourceId,Reason:ResourceStatusReason}' \
-                    --output table 2>/dev/null || true
-                return 1
+                    --output table 2>/dev/null || echo "Unable to retrieve error details")
+                
+                echo "$failed_resources"
+                
+                # Check if it's an S3 bucket issue and we haven't retried yet
+                if echo "$failed_resources" | grep -q "bucket\|Bucket" && [ $retry_count -lt $max_retries ]; then
+                    retry_count=$((retry_count + 1))
+                    log_warning "🔄 S3 bucket deletion issue detected - attempting enhanced cleanup and retry ($retry_count/$max_retries)"
+                    
+                    # Re-run enhanced S3 cleanup
+                    cleanup_s3_buckets
+                    
+                    # Retry stack deletion
+                    log_info "🔄 Retrying stack deletion after enhanced S3 cleanup..."
+                    execute_command "aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION" "Stack deletion retry after S3 cleanup"
+                    
+                    # Reset timing for the retry
+                    wait_start=$(date +%s)
+                    continue
+                else
+                    log_error "💥 Stack deletion failed after $retry_count retries"
+                    return 1
+                fi
                 ;;
         esac
         
-        # Timeout after 30 minutes
-        if [ $wait_duration -gt 1800 ]; then
+        # Timeout after 45 minutes (increased from 30 minutes)
+        if [ $wait_duration -gt 2700 ]; then
             echo ""
-            log_error "Stack deletion timed out after 30 minutes"
+            log_error "⏰ Stack deletion timed out after 45 minutes"
+            log_info "💡 Check AWS Console for manual intervention requirements"
             return 1
         fi
         
         sleep 10
     done
     
-    log_success "CloudFormation stack destruction completed"
+    log_success "🎉 CloudFormation stack destruction completed successfully"
 }
 
 #####################################
@@ -681,15 +835,26 @@ cleanup_orphaned_resources() {
         local type="${resource%%:*}"
         local details="${resource#*:}"
         
+        if [ "$DRY_RUN" = "true" ]; then
+            log_warning "DRY RUN: Would delete $type resource: $details"
+            continue
+        fi
+        
         case $type in
+            "S3_BUCKET")
+                log_info "🪣 Processing orphaned S3 bucket: $details"
+                cleanup_single_bucket_enhanced "$details"
+                # After emptying, try to delete the bucket
+                execute_command "aws s3 rb s3://$details --region $REGION" "Delete empty orphaned bucket $details" "true"
+                ;;
             "LAMBDA")
-                log_info "Deleting orphaned Lambda function: $details"
+                log_info "⚡ Deleting orphaned Lambda function: $details"
                 execute_command "aws lambda delete-function --function-name $details --region $REGION" "Delete Lambda $details" "true"
                 ;;
             "API_GATEWAY")
                 local id="${details%%:*}"
                 local name="${details#*:}"
-                log_info "Deleting orphaned API Gateway: $name ($id)"
+                log_info "🌐 Deleting orphaned API Gateway: $name ($id)"
                 execute_command "aws apigateway delete-rest-api --rest-api-id $id --region $REGION" "Delete API Gateway $id" "true"
                 ;;
             "CLOUDFRONT")
@@ -697,28 +862,29 @@ cleanup_orphaned_resources() {
                 local id="${parts[0]}"
                 local domain="${parts[1]}"
                 local status="${parts[2]}"
-                log_warning "CloudFront distribution $domain ($id) requires manual cleanup"
-                log_info "Status: $status - CloudFront distributions must be disabled before deletion"
-                log_info "Manual steps:"
-                log_info "  1. aws cloudfront get-distribution-config --id $id"
-                log_info "  2. Modify config to set Enabled=false"
-                log_info "  3. aws cloudfront update-distribution --id $id --distribution-config <config>"
-                log_info "  4. Wait for status to become 'Deployed'"
-                log_info "  5. aws cloudfront delete-distribution --id $id --if-match <etag>"
+                log_warning "☁️ CloudFront distribution $domain ($id) found with status: $status"
+                log_info "💡 CloudFront distributions require manual cleanup:"
+                log_info "   1. Disable the distribution first"
+                log_info "   2. Wait for status to become 'Deployed'"
+                log_info "   3. Then delete the distribution"
+                log_info "🔧 Manual commands:"
+                log_info "   aws cloudfront get-distribution-config --id $id"
+                log_info "   # Modify config to set Enabled=false, then:"
+                log_info "   aws cloudfront update-distribution --id $id --distribution-config <config>"
+                log_info "   # Wait for deployment, then:"
+                log_info "   aws cloudfront delete-distribution --id $id --if-match <etag>"
                 ;;
             "IAM_ROLE")
-                log_info "Deleting orphaned IAM role: $details"
-                # Detach managed policies
-                execute_command "aws iam list-attached-role-policies --role-name $details --query 'AttachedPolicies[].PolicyArn' --output text | xargs -r -n1 aws iam detach-role-policy --role-name $details --policy-arn" "Detach policies from $details" "true"
-                # Delete inline policies
-                execute_command "aws iam list-role-policies --role-name $details --query 'PolicyNames[]' --output text | xargs -r -n1 aws iam delete-role-policy --role-name $details --policy-name" "Delete inline policies from $details" "true"
-                # Delete role
+                log_info "🔐 Deleting orphaned IAM role: $details"
+                # Enhanced IAM role cleanup
+                execute_command "aws iam list-attached-role-policies --role-name $details --query 'AttachedPolicies[].PolicyArn' --output text | tr '\t' '\n' | while read policy; do [ ! -z \"\$policy\" ] && aws iam detach-role-policy --role-name $details --policy-arn \"\$policy\"; done" "Detach managed policies from $details" "true"
+                execute_command "aws iam list-role-policies --role-name $details --query 'PolicyNames[]' --output text | tr '\t' '\n' | while read policy; do [ ! -z \"\$policy\" ] && aws iam delete-role-policy --role-name $details --policy-name \"\$policy\"; done" "Delete inline policies from $details" "true"
                 execute_command "aws iam delete-role --role-name $details" "Delete IAM role $details" "true"
                 ;;
         esac
     done
     
-    log_success "Orphaned resource cleanup completed"
+    log_success "🎉 Orphaned resource cleanup completed"
 }
 
 #####################################
@@ -730,50 +896,65 @@ verify_destruction() {
     local verification_errors=0
     
     # Check CloudFormation stack
-    log_info "Verifying CloudFormation stack deletion..."
+    log_info "🔍 Verifying CloudFormation stack deletion..."
     if aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
-        log_error "CloudFormation stack still exists"
+        log_error "❌ CloudFormation stack still exists"
         verification_errors=$((verification_errors + 1))
     else
-        log_success "CloudFormation stack successfully deleted"
+        log_success "✅ CloudFormation stack successfully deleted"
     fi
     
-    # Final scan for remaining resources
-    log_info "Final scan for remaining DMGT resources..."
+    # Enhanced final scan for remaining resources
+    log_info "🔍 Comprehensive final scan for remaining DMGT resources..."
     
     # Check S3 buckets
     local remaining_buckets=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'dmgt-basic-form')].Name" --output text 2>/dev/null || echo "")
     if [ ! -z "$remaining_buckets" ]; then
-        log_warning "Remaining S3 buckets found: $remaining_buckets"
+        log_warning "⚠️ Remaining S3 buckets found: $remaining_buckets"
         verification_errors=$((verification_errors + 1))
+        
+        # Show bucket contents for debugging
+        for bucket in $remaining_buckets; do
+            local bucket_objects=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
+            log_info "📊 Bucket $bucket contains $bucket_objects objects"
+        done
     fi
     
     # Check Lambda functions
     local remaining_functions=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'dmgt-basic-form')].FunctionName" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$remaining_functions" ]; then
-        log_warning "Remaining Lambda functions found: $remaining_functions"
+        log_warning "⚠️ Remaining Lambda functions found: $remaining_functions"
         verification_errors=$((verification_errors + 1))
     fi
     
     # Check API Gateways
     local remaining_apis=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].name" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$remaining_apis" ]; then
-        log_warning "Remaining API Gateways found: $remaining_apis"
+        log_warning "⚠️ Remaining API Gateways found: $remaining_apis"
         verification_errors=$((verification_errors + 1))
     fi
     
     # Check IAM roles
     local remaining_roles=$(aws iam list-roles --query "Roles[?contains(RoleName, 'dmgt-basic-form')].RoleName" --output text 2>/dev/null || echo "")
     if [ ! -z "$remaining_roles" ]; then
-        log_warning "Remaining IAM roles found: $remaining_roles"
+        log_warning "⚠️ Remaining IAM roles found: $remaining_roles"
+        verification_errors=$((verification_errors + 1))
+    fi
+    
+    # Check CloudFront distributions
+    local remaining_cloudfront=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Comment, 'dmgt-basic-form')].Id" --output text 2>/dev/null || echo "")
+    if [ ! -z "$remaining_cloudfront" ]; then
+        log_warning "⚠️ Remaining CloudFront distributions found: $remaining_cloudfront"
+        log_info "💡 CloudFront distributions require manual deletion (see cleanup instructions above)"
         verification_errors=$((verification_errors + 1))
     fi
     
     if [ $verification_errors -eq 0 ]; then
-        log_success "✅ All resources successfully destroyed"
+        log_success "🎉 All resources successfully destroyed - environment is completely clean!"
         return 0
     else
         log_warning "⚠️ Destruction completed with $verification_errors remaining resources"
+        log_info "💡 Some resources may require manual cleanup via AWS Console"
         return 1
     fi
 }
@@ -805,7 +986,7 @@ destruction_summary() {
     
     echo -e "${BOLD}🗑️  Resources Destroyed:${NC}"
     echo -e "• CloudFormation Stack: ${GREEN}✓${NC}"
-    echo -e "• S3 Buckets: ${GREEN}✓${NC}"
+    echo -e "• S3 Buckets (Enhanced Cleanup): ${GREEN}✓${NC}"
     echo -e "• Lambda Functions: ${GREEN}✓${NC}"
     echo -e "• API Gateway: ${GREEN}✓${NC}"
     echo -e "• IAM Roles: ${GREEN}✓${NC}"
@@ -831,8 +1012,9 @@ destruction_summary() {
         echo ""
     fi
     
-    echo -e "${BOLD}✅ DMGT Basic Form environment cleaned up${NC}"
+    echo -e "${BOLD}✅ DMGT Basic Form environment cleaned up with enhanced S3 handling${NC}"
     echo -e "${BOLD}💡 You can redeploy anytime using: ${CYAN}./deploy.sh${NC}"
+    echo -e "${BOLD}🔧 Enhanced features: Automatic S3 versioned object cleanup, CloudFormation retry logic${NC}"
     echo ""
 }
 
@@ -857,10 +1039,11 @@ handle_error() {
     echo -e "\n${BOLD}🔧 Troubleshooting:${NC}"
     echo -e "1. Check AWS credentials: ${CYAN}aws sts get-caller-identity${NC}"
     echo -e "2. Check stack status: ${CYAN}aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION${NC}"
-    echo -e "3. Manual cleanup via AWS Console may be required"
-    echo -e "4. Run with verbose mode: ${CYAN}$0 --verbose${NC}"
-    echo -e "5. Force mode (skip confirmations): ${CYAN}$0 --force${NC}"
-    echo -e "6. Check logs: ${CYAN}cat /tmp/dmgt_destroy_output.log${NC}"
+    echo -e "3. Check for S3 bucket issues: ${CYAN}aws s3api list-buckets --query \"Buckets[?contains(Name, 'dmgt-basic-form')]\"${NC}"
+    echo -e "4. Manual cleanup via AWS Console may be required"
+    echo -e "5. Run with verbose mode: ${CYAN}$0 --verbose${NC}"
+    echo -e "6. Force mode (skip confirmations): ${CYAN}$0 --force${NC}"
+    echo -e "7. Check logs: ${CYAN}cat /tmp/dmgt_destroy_output.log${NC}"
     echo ""
     
     exit $exit_code
@@ -880,11 +1063,11 @@ main() {
     echo -e "${BOLD}${RED}"
     printf '=%.0s' {1..80}
     echo ""
-    echo "  DMGT Basic Form - Professional Destruction Script"
+    echo "  DMGT Basic Form - Enhanced Professional Destruction Script"
     printf '=%.0s' {1..80}
     echo -e "${NC}"
     
-    log_info "Starting DMGT Basic Form destruction"
+    log_info "Starting DMGT Basic Form enhanced destruction"
     log_info "Environment: $ENVIRONMENT"
     log_info "Region: $REGION"
     log_info "Owner: $OWNER_NAME"
@@ -895,6 +1078,8 @@ main() {
     if [ "$DRY_RUN" = "true" ]; then
         log_warning "DRY RUN MODE - No actual changes will be made"
     fi
+    
+    log_info "🆕 Enhanced features: S3 versioned object cleanup, CloudFormation retry logic"
     
     # Execute destruction steps
     check_prerequisites
