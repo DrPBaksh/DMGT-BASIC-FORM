@@ -243,7 +243,7 @@ Resources:
         - Key: Version
           Value: "2.0-case-fix"
 
-  # Lambda Function for Form Responses
+  # Lambda Function for Form Responses - ENHANCED WITH EMPLOYEE SESSION MANAGEMENT
   DMGTFormResponsesLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -255,6 +255,7 @@ Resources:
         Variables:
           CONFIG_BUCKET: !Ref DMGTFormConfigBucket
           RESPONSES_BUCKET: !Ref DMGTFormResponsesBucket
+          VERSION: "3.0-employee-sessions"
       Code:
         ZipFile: |
           import json
@@ -268,6 +269,9 @@ Resources:
           def lambda_handler(event, context):
               try:
                   http_method = event['httpMethod']
+                  query_params = event.get('queryStringParameters') or {}
+                  
+                  print(f"[v3.0] {http_method} request with params: {query_params}")
                   
                   if http_method == 'OPTIONS':
                       return {
@@ -282,7 +286,11 @@ Resources:
                   if http_method == 'POST':
                       return save_response(event)
                   elif http_method == 'GET':
-                      return get_company_status(event)
+                      # Check if this is a request for employee data
+                      if query_params.get('action') == 'getEmployee':
+                          return get_employee_data(event)
+                      else:
+                          return get_company_status(event)
                   
                   return {
                       'statusCode': 405,
@@ -294,6 +302,7 @@ Resources:
                       'body': json.dumps({'error': 'Method not allowed'})
                   }
               except Exception as e:
+                  print(f"[v3.0] Error: {str(e)}")
                   return {
                       'statusCode': 500,
                       'headers': {
@@ -307,11 +316,14 @@ Resources:
           def save_response(event):
               body = json.loads(event['body'])
               company_id = body['companyId']
-              form_type = body['formType']  # 'company' or 'employee'
+              form_type = body['formType']
               responses = body['responses']
+              employee_id = body.get('employeeId')  # For returning employees
               
               responses_bucket = os.environ['RESPONSES_BUCKET']
               timestamp = datetime.utcnow().isoformat()
+              
+              print(f"[v3.0] Saving {form_type} response for company {company_id}, employee_id: {employee_id}")
               
               if form_type == 'company':
                   # Check if company form already exists
@@ -330,19 +342,32 @@ Resources:
                       pass  # File doesn't exist, proceed
                   
                   filename = f'{company_id}/company.json'
+                  final_employee_id = None
               else:
-                  # For employee, get next employee number
-                  employee_id = get_next_employee_id(company_id)
-                  filename = f'{company_id}/employee_{employee_id}.json'
-                  responses['employeeId'] = employee_id
+                  # Employee form - use provided employee_id or create new one
+                  if employee_id is not None:
+                      # Returning employee - update existing record
+                      final_employee_id = employee_id
+                      print(f"[v3.0] Updating existing employee {employee_id}")
+                  else:
+                      # New employee - get next ID
+                      final_employee_id = get_next_employee_id(company_id)
+                      print(f"[v3.0] Creating new employee with ID {final_employee_id}")
+                  
+                  filename = f'{company_id}/employee_{final_employee_id}.json'
+                  responses['employeeId'] = final_employee_id
               
               # Add metadata
               response_data = {
                   'companyId': company_id,
                   'formType': form_type,
                   'timestamp': timestamp,
+                  'lastUpdated': timestamp,
                   'responses': responses
               }
+              
+              if form_type == 'employee':
+                  response_data['employeeId'] = final_employee_id
               
               # Save to S3
               s3.put_object(
@@ -352,6 +377,8 @@ Resources:
                   ContentType='application/json'
               )
               
+              print(f"[v3.0] Saved to {filename}")
+              
               return {
                   'statusCode': 200,
                   'headers': {
@@ -359,8 +386,70 @@ Resources:
                       'Access-Control-Allow-Headers': 'Content-Type',
                       'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
                   },
-                  'body': json.dumps({'message': 'Response saved successfully', 'filename': filename})
+                  'body': json.dumps({
+                      'message': 'Response saved successfully', 
+                      'filename': filename,
+                      'employeeId': final_employee_id
+                  })
               }
+
+          def get_employee_data(event):
+              """Get existing employee data for returning employees"""
+              query_params = event.get('queryStringParameters') or {}
+              company_id = query_params.get('companyId')
+              employee_id = query_params.get('employeeId')
+              
+              if not company_id or employee_id is None:
+                  return {
+                      'statusCode': 400,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': 'companyId and employeeId required'})
+                  }
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              filename = f'{company_id}/employee_{employee_id}.json'
+              
+              try:
+                  response = s3.get_object(Bucket=responses_bucket, Key=filename)
+                  employee_data = json.loads(response['Body'].read().decode('utf-8'))
+                  
+                  print(f"[v3.0] Retrieved employee {employee_id} data for company {company_id}")
+                  
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({
+                          'found': True,
+                          'employeeData': employee_data,
+                          'responses': employee_data.get('responses', {}),
+                          'lastUpdated': employee_data.get('lastUpdated'),
+                          'employeeId': employee_id
+                      })
+                  }
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'NoSuchKey':
+                      return {
+                          'statusCode': 200,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': 'Content-Type',
+                              'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          },
+                          'body': json.dumps({
+                              'found': False,
+                              'message': f'No employee found with ID {employee_id} for company {company_id}'
+                          })
+                      }
+                  else:
+                      raise e
 
           def get_next_employee_id(company_id):
               responses_bucket = os.environ['RESPONSES_BUCKET']
@@ -368,7 +457,15 @@ Resources:
                   response = s3.list_objects_v2(Bucket=responses_bucket, Prefix=f'{company_id}/employee_')
                   if 'Contents' in response:
                       employee_files = [obj['Key'] for obj in response['Contents'] if obj['Key'].startswith(f'{company_id}/employee_')]
-                      return len(employee_files)
+                      # Get the highest employee ID and add 1
+                      max_id = -1
+                      for file_key in employee_files:
+                          try:
+                              employee_id = int(file_key.split('employee_')[1].split('.')[0])
+                              max_id = max(max_id, employee_id)
+                          except (ValueError, IndexError):
+                              continue
+                      return max_id + 1
                   return 0
               except ClientError:
                   return 0
@@ -395,12 +492,24 @@ Resources:
               except ClientError:
                   company_completed = False
               
-              # Count employees
+              # Count employees and get their IDs
               try:
                   response = s3.list_objects_v2(Bucket=responses_bucket, Prefix=f'{company_id}/employee_')
-                  employee_count = len(response.get('Contents', []))
+                  employee_files = response.get('Contents', [])
+                  employee_ids = []
+                  
+                  for obj in employee_files:
+                      try:
+                          employee_id = int(obj['Key'].split('employee_')[1].split('.')[0])
+                          employee_ids.append(employee_id)
+                      except (ValueError, IndexError):
+                          continue
+                  
+                  employee_ids.sort()
+                  employee_count = len(employee_ids)
               except ClientError:
                   employee_count = 0
+                  employee_ids = []
               
               return {
                   'statusCode': 200,
@@ -411,7 +520,9 @@ Resources:
                   },
                   'body': json.dumps({
                       'companyCompleted': company_completed,
-                      'employeeCount': employee_count
+                      'employeeCount': employee_count,
+                      'employeeIds': employee_ids,
+                      'nextEmployeeId': max(employee_ids) + 1 if employee_ids else 0
                   })
               }
       Tags:
@@ -419,6 +530,8 @@ Resources:
           Value: dmgt-basic-form
         - Key: Environment
           Value: !Ref Environment
+        - Key: Version
+          Value: "3.0-employee-sessions"
 
   # API Gateway
   DMGTFormAPI:
