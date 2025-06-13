@@ -139,6 +139,17 @@ Resources:
                   http_method = event['httpMethod']
                   path = event['path']
                   
+                  # Handle CORS preflight request
+                  if http_method == 'OPTIONS':
+                      return {
+                          'statusCode': 200,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': 'Content-Type',
+                              'Access-Control-Allow-Methods': 'OPTIONS,GET'
+                          }
+                      }
+                  
                   if http_method == 'GET' and '/config/' in path:
                       # Get form configuration
                       form_type = path.split('/config/')[1]
@@ -149,7 +160,7 @@ Resources:
                       'headers': {
                           'Access-Control-Allow-Origin': '*',
                           'Access-Control-Allow-Headers': 'Content-Type',
-                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET'
                       },
                       'body': json.dumps({'error': 'Not found'})
                   }
@@ -159,7 +170,7 @@ Resources:
                       'headers': {
                           'Access-Control-Allow-Origin': '*',
                           'Access-Control-Allow-Headers': 'Content-Type',
-                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET'
                       },
                       'body': json.dumps({'error': str(e)})
                   }
@@ -180,7 +191,7 @@ Resources:
                       'headers': {
                           'Access-Control-Allow-Origin': '*',
                           'Access-Control-Allow-Headers': 'Content-Type',
-                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET'
                       },
                       'body': json.dumps(questions)
                   }
@@ -190,7 +201,7 @@ Resources:
                       'headers': {
                           'Access-Control-Allow-Origin': '*',
                           'Access-Control-Allow-Headers': 'Content-Type',
-                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET'
                       },
                       'body': json.dumps({'error': 'Configuration not found'})
                   }
@@ -394,6 +405,7 @@ Resources:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - DMGTFormConfigMethod
+      - DMGTFormConfigOptionsMethod
       - DMGTFormResponsesMethod
     Properties:
       RestApiId: !Ref DMGTFormAPI
@@ -420,6 +432,19 @@ Resources:
       RestApiId: !Ref DMGTFormAPI
       ResourceId: !Ref DMGTFormConfigProxyResource
       HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormConfigLambda.Arn}/invocations'
+
+  # ADD MISSING OPTIONS METHOD FOR CORS
+  DMGTFormConfigOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref DMGTFormConfigProxyResource
+      HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
