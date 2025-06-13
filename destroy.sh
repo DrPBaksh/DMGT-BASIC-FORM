@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Configuration with defaults
 ENVIRONMENT=${ENVIRONMENT:-prod}
-REGION=${AWS_REGION:-us-east-1}
+REGION=${AWS_REGION:-eu-west-2}
 OWNER_NAME=${OWNER_NAME:-$(whoami)}
 VERBOSE=${VERBOSE:-false}
 DRY_RUN=${DRY_RUN:-false}
