@@ -12,11 +12,14 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
   }, [employeeId]);
 
   const handleNewEmployee = () => {
+    console.log('New employee button clicked');
     setSessionMode('new');
+    // Call onSessionSetup immediately for new employees
     onSessionSetup('new');
   };
 
   const handleReturningEmployee = () => {
+    console.log('Returning employee button clicked');
     setSessionMode('returning');
     setValidationError('');
   };
@@ -34,7 +37,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
     }
 
     // Check if the employee ID exists in the company's employee list
-    if (companyStatus.employeeIds.length > 0 && !companyStatus.employeeIds.includes(employeeIdNum)) {
+    if (companyStatus.employeeIds && companyStatus.employeeIds.length > 0 && !companyStatus.employeeIds.includes(employeeIdNum)) {
       setValidationError(`Employee ID ${employeeIdNum} not found for this company. Available IDs: ${companyStatus.employeeIds.join(', ')}`);
       return false;
     }
@@ -49,9 +52,12 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
     setLoading(true);
     setValidationError('');
     
+    console.log(`Submitting returning employee ID: ${employeeIdNum}`);
+    
     try {
       await onSessionSetup('returning', employeeIdNum);
     } catch (error) {
+      console.error('Error setting up returning employee session:', error);
       setValidationError('Failed to load employee data. Please try again.');
     } finally {
       setLoading(false);
@@ -70,9 +76,13 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
     }
   };
 
+  const handleEmployeeIdChipClick = (id) => {
+    setEmployeeId(id.toString());
+  };
+
   if (sessionMode === 'returning') {
     return (
-      <div className="employee-session-manager fade-in">
+      <div className="employee-session-manager">
         <div className="session-card">
           <div className="session-header">
             <div className="session-icon">👋</div>
@@ -106,7 +116,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
             </div>
             
             <div className="employee-id-help">
-              {companyStatus.employeeIds.length > 0 ? (
+              {companyStatus.employeeIds && companyStatus.employeeIds.length > 0 ? (
                 <div className="existing-employees">
                   <div className="help-icon">📋</div>
                   <div>
@@ -116,7 +126,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                         <span 
                           key={id} 
                           className={`employee-id-chip ${parseInt(employeeId) === id ? 'selected' : ''}`}
-                          onClick={() => setEmployeeId(id.toString())}
+                          onClick={() => handleEmployeeIdChipClick(id)}
                         >
                           #{id}
                         </span>
@@ -166,7 +176,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
   }
 
   return (
-    <div className="employee-session-manager fade-in">
+    <div className="employee-session-manager">
       <div className="session-intro">
         <div className="intro-icon">🚀</div>
         <h3>Employee Assessment Setup</h3>
@@ -239,7 +249,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
           <div className="help-item">
             <span className="help-bullet">🆕</span>
             <div className="help-text">
-              <strong>New Employee:</strong> Choose this if you haven't started an assessment before. You'll receive a unique employee ID.
+              <strong>New Employee:</strong> Choose this if you haven't started an assessment before. You'll receive a unique employee ID automatically.
             </div>
           </div>
           <div className="help-item">
