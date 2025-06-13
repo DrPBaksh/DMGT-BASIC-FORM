@@ -612,8 +612,6 @@ EOF
 fix_package_json() {
     log_info "Checking and fixing package.json for Node.js compatibility..."
     
-    cd "$FRONTEND_DIR"
-    
     # Check if react-scripts is 5.0.1 and needs updating
     local react_scripts_version=$(npm list react-scripts --depth=0 2>/dev/null | grep react-scripts | cut -d'@' -f2 || echo "not-found")
     
@@ -621,13 +619,12 @@ fix_package_json() {
         log_warning "Updating react-scripts from 5.0.1 to 5.0.2 for Node.js compatibility"
         npm install react-scripts@5.0.2 --save
     fi
-    
-    cd "$SCRIPT_DIR"
 }
 
 build_frontend() {
     log_step "Building React Application"
     
+    # Change to frontend directory and stay there
     cd "$FRONTEND_DIR"
     local frontend_start_time=$(date +%s)
     
@@ -635,7 +632,7 @@ build_frontend() {
     local node_version=$(node --version | cut -d'v' -f2)
     log_debug "Node.js version: $node_version"
     
-    # Fix package.json if needed
+    # Fix package.json if needed (now runs in correct directory)
     fix_package_json
     
     # Clean npm cache if needed
@@ -644,7 +641,7 @@ build_frontend() {
     
     # Delete node_modules and package-lock.json to ensure clean install
     log_info "Ensuring clean npm environment..."
-    rm -rf node_modules
+    rm -rf node_modules package-lock.json
     
     # Install dependencies with explicit Node.js legacy support
     log_info "Installing npm dependencies..."
@@ -667,6 +664,7 @@ build_frontend() {
     local build_size=$(du -sh build | cut -f1)
     log_success "React build completed (Size: $build_size)"
     
+    # Return to script directory
     cd "$SCRIPT_DIR"
     
     local frontend_end_time=$(date +%s)
