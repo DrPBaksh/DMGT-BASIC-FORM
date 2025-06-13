@@ -4,6 +4,7 @@ import FormRenderer from './components/FormRenderer';
 import TabNavigation from './components/TabNavigation';
 import Logo from './components/Logo';
 import ProgressBar from './components/ProgressBar';
+import EmployeeSessionManager from './components/EmployeeSessionManager';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://your-api-gateway-url.amazonaws.com/prod';
 
@@ -12,9 +13,14 @@ function App() {
   const [companyId, setCompanyId] = useState('');
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [companyStatus, setCompanyStatus] = useState({ companyCompleted: false, employeeCount: 0 });
+  const [companyStatus, setCompanyStatus] = useState({ companyCompleted: false, employeeCount: 0, employeeIds: [] });
   const [responses, setResponses] = useState({});
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  
+  // Employee session management
+  const [employeeSessionMode, setEmployeeSessionMode] = useState(null); // 'new' or 'returning'
+  const [currentEmployeeId, setCurrentEmployeeId] = useState(null);
+  const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
 
   const tabs = [
     { id: 'company', label: 'Company Assessment', icon: '🏢' },
@@ -23,10 +29,12 @@ function App() {
 
   useEffect(() => {
     if (companyId && activeTab) {
-      loadQuestions();
-      checkCompanyStatus();
+      if (activeTab === 'company' || (activeTab === 'employee' && employeeSessionReady)) {
+        loadQuestions();
+        checkCompanyStatus();
+      }
     }
-  }, [activeTab, companyId]);
+  }, [activeTab, companyId, employeeSessionReady]);
 
   const loadQuestions = async () => {
     setLoading(true);
@@ -58,6 +66,24 @@ function App() {
     }
   };
 
+  const loadEmployeeData = async (employeeId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/responses?action=getEmployee&companyId=${companyId}&employeeId=${employeeId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.found) {
+          setResponses(data.responses || {});
+          setCurrentEmployeeId(employeeId);
+          return data.employeeData;
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error('Error loading employee data:', error);
+      return null;
+    }
+  };
+
   const saveResponse = async (questionId, answer, file = null) => {
     const newResponses = { ...responses, [questionId]: answer };
     setResponses(newResponses);
@@ -69,6 +95,11 @@ function App() {
         formType: activeTab,
         responses: newResponses
       };
+
+      // For employee forms, include employee ID if available
+      if (activeTab === 'employee' && currentEmployeeId !== null) {
+        payload.employeeId = currentEmployeeId;
+      }
 
       const response = await fetch(`${API_BASE_URL}/responses`, {
         method: 'POST',
@@ -86,6 +117,14 @@ function App() {
         }
         throw new Error(errorData.error);
       }
+
+      // If this was a new employee's first save, update the employee ID
+      if (activeTab === 'employee' && currentEmployeeId === null) {
+        const responseData = await response.json();
+        if (responseData.employeeId !== undefined) {
+          setCurrentEmployeeId(responseData.employeeId);
+        }
+      }
     } catch (error) {
       console.error('Error saving response:', error);
       alert('Error saving response. Please try again.');
@@ -97,19 +136,110 @@ function App() {
       alert('Company questionnaire has already been completed for this Company ID.');
       return;
     }
+    
     setActiveTab(tabId);
     setResponses({});
     setCurrentQuestionIndex(0);
+    
+    // Reset employee session when switching tabs
+    if (tabId === 'employee') {
+      setEmployeeSessionMode(null);
+      setCurrentEmployeeId(null);
+      setEmployeeSessionReady(false);
+    } else {
+      setEmployeeSessionReady(true);
+    }
   };
 
   const handleCompanyIdChange = (e) => {
     setCompanyId(e.target.value);
+    // Reset everything when company ID changes
+    setEmployeeSessionMode(null);
+    setCurrentEmployeeId(null);
+    setEmployeeSessionReady(false);
+    setResponses({});
+  };
+
+  const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
+    setEmployeeSessionMode(mode);
+    
+    if (mode === 'new') {
+      setCurrentEmployeeId(null);
+      setResponses({});
+      setEmployeeSessionReady(true);
+    } else if (mode === 'returning' && employeeId !== null) {
+      const employeeData = await loadEmployeeData(employeeId);
+      if (employeeData) {
+        setEmployeeSessionReady(true);
+      } else {
+        alert(`No employee found with ID ${employeeId}. Please check your Employee ID or start as a new employee.`);
+        setEmployeeSessionMode(null);
+      }
+    }
   };
 
   const calculateProgress = () => {
     if (questions.length === 0) return 0;
     const answeredQuestions = Object.keys(responses).length;
     return (answeredQuestions / questions.length) * 100;
+  };
+
+  const renderEmployeeSection = () => {
+    if (!employeeSessionReady) {
+      return (
+        <EmployeeSessionManager
+          companyId={companyId}
+          companyStatus={companyStatus}
+          onSessionSetup={handleEmployeeSessionSetup}
+        />
+      );
+    }
+
+    return (
+      <>
+        <div className="employee-session-info">
+          <div className="session-badge">
+            {employeeSessionMode === 'new' ? (
+              <span className="badge badge-new">New Employee Assessment</span>
+            ) : (
+              <span className="badge badge-returning">
+                Returning Employee #{currentEmployeeId}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <ProgressBar 
+          progress={calculateProgress()}
+          currentQuestion={currentQuestionIndex + 1}
+          totalQuestions={questions.length}
+        />
+
+        <div className="form-container">
+          {loading ? (
+            <div className="loading-state">
+              <div className="loading-spinner"></div>
+              <p>Loading questions...</p>
+            </div>
+          ) : questions.length > 0 ? (
+            <FormRenderer
+              questions={questions}
+              responses={responses}
+              onResponseChange={saveResponse}
+              onQuestionChange={setCurrentQuestionIndex}
+              companyId={companyId}
+              formType={activeTab}
+              employeeId={currentEmployeeId}
+              employeeMode={employeeSessionMode}
+            />
+          ) : (
+            <div className="empty-state">
+              <p>No questions available for this form type.</p>
+            </div>
+          )}
+        </div>
+      </>
+    );
   };
 
   return (
@@ -142,11 +272,6 @@ function App() {
                 ⚠️ Company assessment completed. {companyStatus.employeeCount} employee(s) assessed.
               </div>
             )}
-            {companyStatus.employeeCount > 0 && activeTab === 'employee' && (
-              <div className="status-info">
-                👥 You will be Employee #{companyStatus.employeeCount + 1} for this company
-              </div>
-            )}
           </div>
 
           {companyId && (
@@ -157,33 +282,39 @@ function App() {
                 onTabChange={handleTabChange}
               />
 
-              <ProgressBar 
-                progress={calculateProgress()}
-                currentQuestion={currentQuestionIndex + 1}
-                totalQuestions={questions.length}
-              />
-
-              <div className="form-container">
-                {loading ? (
-                  <div className="loading-state">
-                    <div className="loading-spinner"></div>
-                    <p>Loading questions...</p>
-                  </div>
-                ) : questions.length > 0 ? (
-                  <FormRenderer
-                    questions={questions}
-                    responses={responses}
-                    onResponseChange={saveResponse}
-                    onQuestionChange={setCurrentQuestionIndex}
-                    companyId={companyId}
-                    formType={activeTab}
+              {activeTab === 'company' && (
+                <>
+                  <ProgressBar 
+                    progress={calculateProgress()}
+                    currentQuestion={currentQuestionIndex + 1}
+                    totalQuestions={questions.length}
                   />
-                ) : (
-                  <div className="empty-state">
-                    <p>No questions available for this form type.</p>
+
+                  <div className="form-container">
+                    {loading ? (
+                      <div className="loading-state">
+                        <div className="loading-spinner"></div>
+                        <p>Loading questions...</p>
+                      </div>
+                    ) : questions.length > 0 ? (
+                      <FormRenderer
+                        questions={questions}
+                        responses={responses}
+                        onResponseChange={saveResponse}
+                        onQuestionChange={setCurrentQuestionIndex}
+                        companyId={companyId}
+                        formType={activeTab}
+                      />
+                    ) : (
+                      <div className="empty-state">
+                        <p>No questions available for this form type.</p>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
+
+              {activeTab === 'employee' && renderEmployeeSection()}
             </>
           )}
         </div>
