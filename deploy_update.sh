@@ -379,15 +379,28 @@ test_backend_apis() {
         return 1
     fi
     
-    # Test API endpoints
-    local company_response=$(curl -s -w "%{http_code}" -o /dev/null "$api_url/config/Company" 2>/dev/null || echo "000")
-    local employee_response=$(curl -s -w "%{http_code}" -o /dev/null "$api_url/config/Employee" 2>/dev/null || echo "000")
+    # Test API endpoints with both cases to catch case sensitivity issues
+    local company_upper_response=$(curl -s -w "%{http_code}" -o /dev/null "$api_url/config/Company" 2>/dev/null || echo "000")
+    local company_lower_response=$(curl -s -w "%{http_code}" -o /dev/null "$api_url/config/company" 2>/dev/null || echo "000")
+    local employee_upper_response=$(curl -s -w "%{http_code}" -o /dev/null "$api_url/config/Employee" 2>/dev/null || echo "000")
+    local employee_lower_response=$(curl -s -w "%{http_code}" -o /dev/null "$api_url/config/employee" 2>/dev/null || echo "000")
     
-    if [ "$company_response" = "200" ] && [ "$employee_response" = "200" ]; then
-        log_debug "Backend API test successful (Company: $company_response, Employee: $employee_response)"
+    log_debug "API test results:"
+    log_debug "  Company (uppercase): $company_upper_response"
+    log_debug "  company (lowercase): $company_lower_response"
+    log_debug "  Employee (uppercase): $employee_upper_response"
+    log_debug "  employee (lowercase): $employee_lower_response"
+    
+    # Both cases should work (200) for case-insensitive endpoints
+    if [ "$company_upper_response" = "200" ] && [ "$company_lower_response" = "200" ] && 
+       [ "$employee_upper_response" = "200" ] && [ "$employee_lower_response" = "200" ]; then
+        log_debug "Backend API test successful - case insensitive endpoints working"
         return 0
+    elif [ "$company_upper_response" = "200" ] && [ "$employee_upper_response" = "200" ]; then
+        log_warning "Backend APIs working with uppercase only (case sensitivity issue detected)"
+        return 1
     else
-        log_debug "Backend API test failed (Company: $company_response, Employee: $employee_response)"
+        log_debug "Backend API test failed"
         return 1
     fi
 }
@@ -694,34 +707,43 @@ deploy_frontend() {
 }
 
 #####################################
-# Testing Functions
+# Enhanced Testing Functions
 #####################################
 test_deployment() {
     log_step "Testing Deployment"
     
     local test_start_time=$(date +%s)
     
-    # Test API endpoints
-    log_info "Testing API Gateway endpoints..."
+    # Test API endpoints with enhanced case sensitivity checking
+    log_info "Testing API Gateway endpoints with case sensitivity checks..."
     
-    # Test Company configuration
-    local company_api_url="$API_URL/config/Company"
-    local company_response=$(curl -s -w "%{http_code}" -o /tmp/company_test.json "$company_api_url" 2>/dev/null || echo "000")
+    # Test Company configuration (both cases)
+    local company_upper_url="$API_URL/config/Company"
+    local company_lower_url="$API_URL/config/company"
+    local company_upper_response=$(curl -s -w "%{http_code}" -o /tmp/company_upper_test.json "$company_upper_url" 2>/dev/null || echo "000")
+    local company_lower_response=$(curl -s -w "%{http_code}" -o /tmp/company_lower_test.json "$company_lower_url" 2>/dev/null || echo "000")
     
-    if [ "$company_response" = "200" ]; then
-        log_success "✅ Company API endpoint responding correctly"
+    # Test Employee configuration (both cases)
+    local employee_upper_url="$API_URL/config/Employee"
+    local employee_lower_url="$API_URL/config/employee"
+    local employee_upper_response=$(curl -s -w "%{http_code}" -o /tmp/employee_upper_test.json "$employee_upper_url" 2>/dev/null || echo "000")
+    local employee_lower_response=$(curl -s -w "%{http_code}" -o /tmp/employee_lower_test.json "$employee_lower_url" 2>/dev/null || echo "000")
+    
+    # Report results with case sensitivity analysis
+    if [ "$company_upper_response" = "200" ] && [ "$company_lower_response" = "200" ]; then
+        log_success "✅ Company API endpoint responding correctly (case insensitive)"
+    elif [ "$company_upper_response" = "200" ]; then
+        log_warning "⚠️ Company API endpoint working with uppercase only (Company: $company_upper_response, company: $company_lower_response)"
     else
-        log_warning "⚠️ Company API endpoint returned HTTP $company_response"
+        log_warning "⚠️ Company API endpoint issues (Company: $company_upper_response, company: $company_lower_response)"
     fi
     
-    # Test Employee configuration
-    local employee_api_url="$API_URL/config/Employee"
-    local employee_response=$(curl -s -w "%{http_code}" -o /tmp/employee_test.json "$employee_api_url" 2>/dev/null || echo "000")
-    
-    if [ "$employee_response" = "200" ]; then
-        log_success "✅ Employee API endpoint responding correctly"
+    if [ "$employee_upper_response" = "200" ] && [ "$employee_lower_response" = "200" ]; then
+        log_success "✅ Employee API endpoint responding correctly (case insensitive)"
+    elif [ "$employee_upper_response" = "200" ]; then
+        log_warning "⚠️ Employee API endpoint working with uppercase only (Employee: $employee_upper_response, employee: $employee_lower_response)"
     else
-        log_warning "⚠️ Employee API endpoint returned HTTP $employee_response"
+        log_warning "⚠️ Employee API endpoint issues (Employee: $employee_upper_response, employee: $employee_lower_response)"
     fi
     
     # Test website
@@ -744,6 +766,19 @@ test_deployment() {
         log_success "✅ S3 configuration bucket accessible ($bucket_test files)"
     else
         log_warning "⚠️ S3 configuration bucket may be empty"
+    fi
+    
+    # Additional debugging information
+    if [ "$VERBOSE" = "true" ]; then
+        log_debug "API Response Details:"
+        if [ -f "/tmp/company_lower_test.json" ]; then
+            local company_lower_content=$(head -c 100 /tmp/company_lower_test.json 2>/dev/null || echo "No content")
+            log_debug "  company (lowercase) response: $company_lower_content"
+        fi
+        if [ -f "/tmp/employee_lower_test.json" ]; then
+            local employee_lower_content=$(head -c 100 /tmp/employee_lower_test.json 2>/dev/null || echo "No content")
+            log_debug "  employee (lowercase) response: $employee_lower_content"
+        fi
     fi
     
     local test_end_time=$(date +%s)
@@ -775,9 +810,11 @@ deployment_summary() {
     echo -e "${BOLD}${CYAN}║  🔗 API Gateway:                                                              ║${NC}"
     echo -e "${BOLD}${CYAN}║     ${GREEN}${API_URL}${CYAN}                ║${NC}"
     echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
-    echo -e "${BOLD}${CYAN}║  📋 Test Endpoints:                                                           ║${NC}"
+    echo -e "${BOLD}${CYAN}║  📋 Test Endpoints (both cases should work):                                 ║${NC}"
     echo -e "${BOLD}${CYAN}║     Company Config:  ${GREEN}${API_URL}/config/Company${CYAN}       ║${NC}"
+    echo -e "${BOLD}${CYAN}║                      ${GREEN}${API_URL}/config/company${CYAN}       ║${NC}"
     echo -e "${BOLD}${CYAN}║     Employee Config: ${GREEN}${API_URL}/config/Employee${CYAN}      ║${NC}"
+    echo -e "${BOLD}${CYAN}║                      ${GREEN}${API_URL}/config/employee${CYAN}      ║${NC}"
     echo -e "${BOLD}${CYAN}║     Status Check:    ${GREEN}${API_URL}/responses?companyId=TEST${CYAN}  ║${NC}"
     echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
     echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
@@ -814,9 +851,11 @@ deployment_summary() {
         echo ""
     fi
     
-    echo -e "${BOLD}🧪 Quick Tests:${NC}"
+    echo -e "${BOLD}🧪 Quick Tests (both cases should return 200):${NC}"
     echo -e "curl \"${API_URL}/config/Company\""
+    echo -e "curl \"${API_URL}/config/company\""
     echo -e "curl \"${API_URL}/config/Employee\""
+    echo -e "curl \"${API_URL}/config/employee\""
     echo -e "curl \"${API_URL}/responses?companyId=TEST\""
     echo ""
     
@@ -848,6 +887,7 @@ handle_error() {
     echo -e "4. Run with verbose mode: ${CYAN}$0 --verbose${NC}"
     echo -e "5. Check logs: ${CYAN}cat /tmp/dmgt_deploy_output.log${NC}"
     echo -e "6. For Node.js issues: ${CYAN}export NODE_OPTIONS=\"--openssl-legacy-provider\"${NC}"
+    echo -e "7. Test API endpoints manually: ${CYAN}curl -v \"[API_URL]/config/company\"${NC}"
     echo ""
     
     exit $exit_code

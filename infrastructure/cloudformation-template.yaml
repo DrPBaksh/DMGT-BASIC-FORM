@@ -111,7 +111,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Lambda Function for Form Configuration
+  # Lambda Function for Form Configuration - VERSION 2.0 FORCE UPDATE
   DMGTFormConfigLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -123,6 +123,7 @@ Resources:
         Variables:
           CONFIG_BUCKET: !Ref DMGTFormConfigBucket
           RESPONSES_BUCKET: !Ref DMGTFormResponsesBucket
+          VERSION: "2.0-case-fix"
       Code:
         ZipFile: |
           import json
@@ -139,6 +140,8 @@ Resources:
                   http_method = event['httpMethod']
                   path = event['path']
                   
+                  print(f"[v2.0] Received request: {http_method} {path}")
+                  
                   # Handle CORS preflight request
                   if http_method == 'OPTIONS':
                       return {
@@ -153,6 +156,7 @@ Resources:
                   if http_method == 'GET' and '/config/' in path:
                       # Get form configuration
                       form_type = path.split('/config/')[1]
+                      print(f"[v2.0] Form type requested: '{form_type}'")
                       return get_form_config(form_type)
                   
                   return {
@@ -165,6 +169,7 @@ Resources:
                       'body': json.dumps({'error': 'Not found'})
                   }
               except Exception as e:
+                  print(f"[v2.0] Error in lambda_handler: {str(e)}")
                   return {
                       'statusCode': 500,
                       'headers': {
@@ -178,13 +183,23 @@ Resources:
           def get_form_config(form_type):
               try:
                   config_bucket = os.environ['CONFIG_BUCKET']
-                  filename = f'{form_type}Questions.csv'
+                  
+                  # Fix case sensitivity: capitalize first letter to match CSV filenames
+                  # 'company' -> 'Company', 'employee' -> 'Employee'  
+                  form_type_original = form_type
+                  form_type_capitalized = form_type.capitalize()
+                  filename = f'{form_type_capitalized}Questions.csv'
+                  
+                  print(f"[v2.0] Converting '{form_type_original}' -> '{form_type_capitalized}'")
+                  print(f"[v2.0] Looking for file: {filename}")
                   
                   response = s3.get_object(Bucket=config_bucket, Key=filename)
                   csv_content = response['Body'].read().decode('utf-8')
                   
                   csv_reader = csv.DictReader(io.StringIO(csv_content))
                   questions = list(csv_reader)
+                  
+                  print(f"[v2.0] Successfully loaded {len(questions)} questions from {filename}")
                   
                   return {
                       'statusCode': 200,
@@ -196,6 +211,10 @@ Resources:
                       'body': json.dumps(questions)
                   }
               except ClientError as e:
+                  error_code = e.response['Error']['Code']
+                  error_msg = e.response['Error']['Message']
+                  print(f"[v2.0] S3 Error: {error_code} - {error_msg}")
+                  print(f"[v2.0] Failed to find file: {filename}")
                   return {
                       'statusCode': 404,
                       'headers': {
@@ -203,13 +222,26 @@ Resources:
                           'Access-Control-Allow-Headers': 'Content-Type',
                           'Access-Control-Allow-Methods': 'OPTIONS,GET'
                       },
-                      'body': json.dumps({'error': 'Configuration not found'})
+                      'body': json.dumps({'error': f'Configuration not found: {filename}'})
+                  }
+              except Exception as e:
+                  print(f"[v2.0] Unexpected error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET'
+                      },
+                      'body': json.dumps({'error': f'Internal server error: {str(e)}'})
                   }
       Tags:
         - Key: Project
           Value: dmgt-basic-form
         - Key: Environment
           Value: !Ref Environment
+        - Key: Version
+          Value: "2.0-case-fix"
 
   # Lambda Function for Form Responses
   DMGTFormResponsesLambda:
@@ -438,7 +470,7 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormConfigLambda.Arn}/invocations'
 
-  # ADD MISSING OPTIONS METHOD FOR CORS
+  # OPTIONS method for CORS
   DMGTFormConfigOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties:
