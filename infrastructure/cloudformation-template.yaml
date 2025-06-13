@@ -178,13 +178,21 @@ Resources:
           def get_form_config(form_type):
               try:
                   config_bucket = os.environ['CONFIG_BUCKET']
-                  filename = f'{form_type}Questions.csv'
+                  
+                  # Fix case sensitivity: capitalize first letter to match CSV filenames
+                  # 'company' -> 'Company', 'employee' -> 'Employee'
+                  form_type_capitalized = form_type.capitalize()
+                  filename = f'{form_type_capitalized}Questions.csv'
+                  
+                  print(f"Looking for file: {filename} (original form_type: {form_type})")
                   
                   response = s3.get_object(Bucket=config_bucket, Key=filename)
                   csv_content = response['Body'].read().decode('utf-8')
                   
                   csv_reader = csv.DictReader(io.StringIO(csv_content))
                   questions = list(csv_reader)
+                  
+                  print(f"Successfully loaded {len(questions)} questions from {filename}")
                   
                   return {
                       'statusCode': 200,
@@ -196,6 +204,8 @@ Resources:
                       'body': json.dumps(questions)
                   }
               except ClientError as e:
+                  error_code = e.response['Error']['Code']
+                  print(f"S3 Error: {error_code} - {e.response['Error']['Message']}")
                   return {
                       'statusCode': 404,
                       'headers': {
@@ -203,7 +213,18 @@ Resources:
                           'Access-Control-Allow-Headers': 'Content-Type',
                           'Access-Control-Allow-Methods': 'OPTIONS,GET'
                       },
-                      'body': json.dumps({'error': 'Configuration not found'})
+                      'body': json.dumps({'error': f'Configuration not found: {filename}'})
+                  }
+              except Exception as e:
+                  print(f"Unexpected error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET'
+                      },
+                      'body': json.dumps({'error': f'Internal server error: {str(e)}'})
                   }
       Tags:
         - Key: Project
@@ -438,7 +459,7 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormConfigLambda.Arn}/invocations'
 
-  # ADD MISSING OPTIONS METHOD FOR CORS
+  # OPTIONS method for CORS
   DMGTFormConfigOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties:
