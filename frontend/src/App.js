@@ -16,11 +16,13 @@ function App() {
   const [companyStatus, setCompanyStatus] = useState({ companyCompleted: false, employeeCount: 0, employeeIds: [] });
   const [responses, setResponses] = useState({});
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [saveStatus, setSaveStatus] = useState(''); // 'saving', 'saved', 'error'
   
-  // Employee session management
+  // Employee session management - Enhanced
   const [employeeSessionMode, setEmployeeSessionMode] = useState(null); // 'new' or 'returning'
   const [currentEmployeeId, setCurrentEmployeeId] = useState(null);
   const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
+  const [sessionPersisted, setSessionPersisted] = useState(false); // Track if session has been saved to backend
 
   const tabs = [
     { id: 'company', label: 'Company Assessment', icon: '🏢' },
@@ -35,6 +37,13 @@ function App() {
       }
     }
   }, [activeTab, companyId, employeeSessionReady]);
+
+  // Enhanced session persistence
+  useEffect(() => {
+    if (employeeSessionMode === 'new' && currentEmployeeId !== null && !sessionPersisted) {
+      setSessionPersisted(true);
+    }
+  }, [currentEmployeeId, employeeSessionMode, sessionPersisted]);
 
   const loadQuestions = async () => {
     setLoading(true);
@@ -74,6 +83,7 @@ function App() {
         if (data.found) {
           setResponses(data.responses || {});
           setCurrentEmployeeId(employeeId);
+          setSessionPersisted(true); // Existing employee session is already persisted
           return data.employeeData;
         }
       }
@@ -84,11 +94,12 @@ function App() {
     }
   };
 
+  // Enhanced saveResponse function - Fixed the main bug
   const saveResponse = async (questionId, answer, file = null) => {
     const newResponses = { ...responses, [questionId]: answer };
     setResponses(newResponses);
+    setSaveStatus('saving');
 
-    // Auto-save to backend
     try {
       const payload = {
         companyId,
@@ -96,9 +107,21 @@ function App() {
         responses: newResponses
       };
 
-      // For employee forms, include employee ID if available
-      if (activeTab === 'employee' && currentEmployeeId !== null) {
-        payload.employeeId = currentEmployeeId;
+      // Critical fix: For employee forms, handle session management properly
+      if (activeTab === 'employee') {
+        // If we have an established employee session, use that ID
+        if (currentEmployeeId !== null) {
+          payload.employeeId = currentEmployeeId;
+        } else if (employeeSessionMode === 'new') {
+          // For new employees, don't send employeeId on first save - let backend assign
+          // This ensures we don't create multiple employee IDs
+          payload.isNewEmployee = true;
+        } else {
+          // This shouldn't happen, but handle gracefully
+          console.error('Employee session not properly initialized');
+          setSaveStatus('error');
+          return;
+        }
       }
 
       const response = await fetch(`${API_BASE_URL}/responses`, {
@@ -113,21 +136,35 @@ function App() {
         const errorData = await response.json();
         if (errorData.error.includes('already completed')) {
           alert('Company questionnaire has already been completed for this Company ID.');
+          setSaveStatus('error');
           return;
         }
         throw new Error(errorData.error);
       }
 
-      // If this was a new employee's first save, update the employee ID
-      if (activeTab === 'employee' && currentEmployeeId === null) {
-        const responseData = await response.json();
+      const responseData = await response.json();
+
+      // Critical fix: For new employees, capture and store the assigned employee ID
+      if (activeTab === 'employee' && employeeSessionMode === 'new' && currentEmployeeId === null) {
         if (responseData.employeeId !== undefined) {
           setCurrentEmployeeId(responseData.employeeId);
+          setSessionPersisted(true);
+          console.log(`New employee session established with ID: ${responseData.employeeId}`);
         }
       }
+
+      setSaveStatus('saved');
+      
+      // Auto-clear save status after a moment
+      setTimeout(() => setSaveStatus(''), 2000);
+
     } catch (error) {
       console.error('Error saving response:', error);
+      setSaveStatus('error');
       alert('Error saving response. Please try again.');
+      
+      // Auto-clear error status
+      setTimeout(() => setSaveStatus(''), 3000);
     }
   };
 
@@ -140,12 +177,14 @@ function App() {
     setActiveTab(tabId);
     setResponses({});
     setCurrentQuestionIndex(0);
+    setSaveStatus('');
     
     // Reset employee session when switching tabs
     if (tabId === 'employee') {
       setEmployeeSessionMode(null);
       setCurrentEmployeeId(null);
       setEmployeeSessionReady(false);
+      setSessionPersisted(false);
     } else {
       setEmployeeSessionReady(true);
     }
@@ -157,23 +196,32 @@ function App() {
     setEmployeeSessionMode(null);
     setCurrentEmployeeId(null);
     setEmployeeSessionReady(false);
+    setSessionPersisted(false);
     setResponses({});
+    setSaveStatus('');
   };
 
+  // Enhanced employee session setup
   const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
     setEmployeeSessionMode(mode);
+    setSaveStatus('');
     
     if (mode === 'new') {
-      setCurrentEmployeeId(null);
+      setCurrentEmployeeId(null); // Will be assigned on first save
       setResponses({});
+      setSessionPersisted(false);
       setEmployeeSessionReady(true);
+      console.log('New employee session initialized');
     } else if (mode === 'returning' && employeeId !== null) {
       const employeeData = await loadEmployeeData(employeeId);
       if (employeeData) {
         setEmployeeSessionReady(true);
+        console.log(`Returning employee session loaded for ID: ${employeeId}`);
       } else {
         alert(`No employee found with ID ${employeeId}. Please check your Employee ID or start as a new employee.`);
         setEmployeeSessionMode(null);
+        setCurrentEmployeeId(null);
+        setSessionPersisted(false);
       }
     }
   };
@@ -182,6 +230,25 @@ function App() {
     if (questions.length === 0) return 0;
     const answeredQuestions = Object.keys(responses).length;
     return (answeredQuestions / questions.length) * 100;
+  };
+
+  // Enhanced save status indicator
+  const renderSaveStatus = () => {
+    if (!saveStatus) return null;
+    
+    const statusConfig = {
+      saving: { icon: '💾', text: 'Saving...', class: 'save-status saving' },
+      saved: { icon: '✅', text: 'Saved', class: 'save-status saved' },
+      error: { icon: '❌', text: 'Save failed', class: 'save-status error' }
+    };
+    
+    const config = statusConfig[saveStatus];
+    return (
+      <div className={config.class}>
+        <span className="save-icon">{config.icon}</span>
+        <span className="save-text">{config.text}</span>
+      </div>
+    );
   };
 
   const renderEmployeeSection = () => {
@@ -200,13 +267,17 @@ function App() {
         <div className="employee-session-info">
           <div className="session-badge">
             {employeeSessionMode === 'new' ? (
-              <span className="badge badge-new">New Employee Assessment</span>
+              <span className="badge badge-new">
+                New Employee Assessment
+                {currentEmployeeId !== null && ` - ID: ${currentEmployeeId}`}
+              </span>
             ) : (
               <span className="badge badge-returning">
                 Returning Employee #{currentEmployeeId}
               </span>
             )}
           </div>
+          {renderSaveStatus()}
         </div>
 
         <ProgressBar 
@@ -231,6 +302,7 @@ function App() {
               formType={activeTab}
               employeeId={currentEmployeeId}
               employeeMode={employeeSessionMode}
+              sessionPersisted={sessionPersisted}
             />
           ) : (
             <div className="empty-state">
@@ -284,6 +356,10 @@ function App() {
 
               {activeTab === 'company' && (
                 <>
+                  <div className="form-header">
+                    {renderSaveStatus()}
+                  </div>
+                  
                   <ProgressBar 
                     progress={calculateProgress()}
                     currentQuestion={currentQuestionIndex + 1}
