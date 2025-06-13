@@ -1,16 +1,44 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail # -e: exit on error, -u: unset variables are errors, -o pipefail: pipe failures
 
+#####################################
 # DMGT Basic Form - Enhanced Deployment Script
-# This script deploys the complete infrastructure and application with comprehensive logging
+# Deploys/destroys infrastructure and frontend for Data & AI Readiness Assessment
+#####################################
 
-set -e
+# Compute paths relative to this script's location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FRONTEND_DIR="$SCRIPT_DIR/frontend"
+INFRASTRUCTURE_DIR="$SCRIPT_DIR/infrastructure"
+DATA_DIR="$SCRIPT_DIR/data"
+ENV_FILE="$FRONTEND_DIR/.env.production"
 
-# Script configuration
-SCRIPT_NAME="DMGT Deploy"
-SCRIPT_VERSION="2.1"
+# Configuration with defaults
+MODE="deploy"
+ENVIRONMENT=${ENVIRONMENT:-prod}
+REGION=${AWS_REGION:-us-east-1}
+OWNER_NAME=${OWNER_NAME:-$(whoami)}
+VERBOSE=${VERBOSE:-false}
+DRY_RUN=${DRY_RUN:-false}
+FORCE_DELETE=${FORCE_DELETE:-false}
+
+# Stack and resource naming
+STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
+BUCKET_PREFIX="dmgt-basic-form"
+
+# Output tracking
+OUTPUTS_FILE="/tmp/dmgt-stack-outputs-${ENVIRONMENT}.json"
 START_TIME=$(date +%s)
 
-# Color codes for better visibility
+# Global tracking variables
+STEP_COUNT=0
+TOTAL_STEPS=8
+ERRORS=()
+WARNINGS=()
+
+#####################################
+# Color codes and formatting
+#####################################
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -21,27 +49,9 @@ WHITE='\033[0;37m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Configuration with defaults
-ENVIRONMENT=${ENVIRONMENT:-dev}
-STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
-REGION=${AWS_REGION:-eu-west-2}
-BUCKET_PREFIX="dmgt-basic-form"
-VERBOSE=${VERBOSE:-true}
-DRY_RUN=${DRY_RUN:-false}
-
-# Global variables for tracking
-STEP_COUNT=0
-TOTAL_STEPS=8
-ERRORS=()
-
-# Function to create separator line
-separator_line() {
-    printf "${BLUE}"
-    printf '=%.0s' {1..80}
-    printf "${NC}\n"
-}
-
-# Logging functions
+#####################################
+# Logging Functions
+#####################################
 log_info() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${CYAN}[INFO]${NC} ${timestamp} - $1"
@@ -55,6 +65,7 @@ log_success() {
 log_warning() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${YELLOW}[WARNING]${NC} ${timestamp} - $1"
+    WARNINGS+=("$1")
 }
 
 log_error() {
@@ -77,7 +88,12 @@ log_step() {
     separator_line
 }
 
-# Progress bar function
+separator_line() {
+    printf "${BLUE}"
+    printf '=%.0s' {1..80}
+    printf "${NC}\n"
+}
+
 show_progress() {
     local current=$1
     local total=$2
@@ -93,10 +109,13 @@ show_progress() {
     printf "${NC}${CYAN}] %d%% (%d/%d)${NC}" $percentage $current $total
 }
 
-# Function to execute commands with logging
+#####################################
+# Command Execution with Logging
+#####################################
 execute_command() {
     local cmd="$1"
     local description="$2"
+    local allow_failure="${3:-false}"
     local step_timer_start=$(date +%s)
     
     log_info "Executing: $description"
@@ -107,15 +126,14 @@ execute_command() {
         return 0
     fi
     
+    local result=0
     if [ "$VERBOSE" = "true" ]; then
-        eval $cmd
-        local result=$?
+        eval $cmd || result=$?
     else
-        eval $cmd > /tmp/deploy_output.log 2>&1
-        local result=$?
-        if [ $result -ne 0 ]; then
+        eval $cmd > /tmp/dmgt_deploy_output.log 2>&1 || result=$?
+        if [ $result -ne 0 ] && [ "$allow_failure" != "true" ]; then
             log_error "Command failed. Output:"
-            cat /tmp/deploy_output.log
+            cat /tmp/dmgt_deploy_output.log
         fi
     fi
     
@@ -124,16 +142,98 @@ execute_command() {
     
     if [ $result -eq 0 ]; then
         log_success "$description completed in ${step_duration}s"
+    elif [ "$allow_failure" = "true" ]; then
+        log_warning "$description failed after ${step_duration}s (exit code: $result) - continuing anyway"
     else
         log_error "$description failed after ${step_duration}s (exit code: $result)"
         return $result
     fi
 }
 
-# Enhanced AWS CLI check
-check_aws_cli() {
-    log_step "Checking AWS CLI Prerequisites"
+#####################################
+# Argument Parsing
+#####################################
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --delete|--destroy)
+                MODE="delete"
+                shift
+                ;;
+            --frontend-only)
+                MODE="frontend-only"
+                shift
+                ;;
+            --environment=*)
+                ENVIRONMENT="${1#*=}"
+                STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
+                shift
+                ;;
+            --region=*)
+                REGION="${1#*=}"
+                shift
+                ;;
+            --owner=*)
+                OWNER_NAME="${1#*=}"
+                shift
+                ;;
+            --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --force)
+                FORCE_DELETE=true
+                shift
+                ;;
+            --help|-h)
+                show_usage
+                exit 0
+                ;;
+            *)
+                log_error "Unknown argument: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+show_usage() {
+    echo -e "${BOLD}DMGT Basic Form Deployment Script${NC}"
+    echo ""
+    echo -e "${BOLD}Usage:${NC}"
+    echo -e "  $0 [OPTIONS]"
+    echo ""
+    echo -e "${BOLD}Options:${NC}"
+    echo -e "  --delete          : Destroys all infrastructure"
+    echo -e "  --frontend-only   : Builds and deploys only the React frontend"
+    echo -e "  --environment=ENV : Set environment (default: prod)"
+    echo -e "  --region=REGION   : Set AWS region (default: us-east-1)"
+    echo -e "  --owner=NAME      : Set owner name (default: current username)"
+    echo -e "  --verbose         : Enable verbose logging"
+    echo -e "  --dry-run         : Show commands without executing"
+    echo -e "  --force           : Skip confirmation prompts"
+    echo -e "  --help            : Show this help message"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo -e "  ${CYAN}$0${NC}                                    # Deploy to prod"
+    echo -e "  ${CYAN}$0 --environment=dev --verbose${NC}        # Deploy to dev with verbose logging"
+    echo -e "  ${CYAN}$0 --frontend-only${NC}                   # Deploy frontend only"
+    echo -e "  ${CYAN}$0 --delete --environment=dev${NC}        # Delete dev environment"
+    echo ""
+}
+
+#####################################
+# Validation Functions
+#####################################
+check_prerequisites() {
+    log_step "Checking Prerequisites"
     
+    # Check AWS CLI
     if ! command -v aws &> /dev/null; then
         log_error "AWS CLI is not installed. Please install it first."
         log_info "Install AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
@@ -150,85 +250,58 @@ check_aws_cli() {
     fi
     
     local caller_identity=$(aws sts get-caller-identity --output json 2>/dev/null)
-    local account_id=$(echo $caller_identity | grep -o '"Account":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
-    local user_arn=$(echo $caller_identity | grep -o '"Arn":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
+    local account_id=$(echo $caller_identity | jq -r '.Account // "N/A"')
+    local user_arn=$(echo $caller_identity | jq -r '.Arn // "N/A"')
     
     log_success "AWS credentials valid"
     log_debug "Account ID: $account_id"
     log_debug "User ARN: $user_arn"
     
     # Verify region
-    log_info "Checking AWS region configuration..."
-    if [ -z "$REGION" ]; then
-        REGION=$(aws configure get region)
-        if [ -z "$REGION" ]; then
-            log_warning "No region set, defaulting to us-east-1"
-            REGION="us-east-1"
-        fi
-    fi
-    log_success "Using AWS region: $REGION"
-    
-    # Test region connectivity
-    log_info "Testing connectivity to region $REGION..."
+    log_info "Verifying AWS region: $REGION"
     if ! aws ec2 describe-regions --region $REGION > /dev/null 2>&1; then
         log_error "Cannot connect to region $REGION"
         exit 1
     fi
     log_success "Region connectivity verified"
+    
+    # Check Node.js for frontend
+    if [[ "$MODE" != "delete" ]]; then
+        if ! command -v node &> /dev/null; then
+            log_error "Node.js is not installed. Please install it first."
+            log_info "Install Node.js: https://nodejs.org/"
+            exit 1
+        fi
+        log_success "Node.js found: $(node --version)"
+        
+        if ! command -v npm &> /dev/null; then
+            log_error "npm is not installed"
+            exit 1
+        fi
+        log_success "npm found: $(npm --version)"
+    fi
+    
+    # Check required files
+    if [[ "$MODE" != "delete" ]]; then
+        local required_files=(
+            "$INFRASTRUCTURE_DIR/cloudformation-template.yaml"
+            "$DATA_DIR/CompanyQuestions.csv"
+            "$DATA_DIR/EmployeeQuestions.csv"
+            "$FRONTEND_DIR/package.json"
+        )
+        
+        for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+                log_error "Required file not found: $file"
+                exit 1
+            fi
+        done
+        log_success "All required files found"
+    fi
 }
 
-# Enhanced Node.js check
-check_nodejs() {
-    log_step "Checking Node.js Prerequisites"
-    
-    if ! command -v node &> /dev/null; then
-        log_error "Node.js is not installed. Please install it first."
-        log_info "Install Node.js: https://nodejs.org/"
-        exit 1
-    fi
-    
-    local node_version=$(node --version)
-    log_success "Node.js found: $node_version"
-    
-    if ! command -v npm &> /dev/null; then
-        log_error "npm is not installed"
-        exit 1
-    fi
-    
-    local npm_version=$(npm --version)
-    log_success "npm found: $npm_version"
-    
-    # Check if package.json exists
-    if [ ! -f "frontend/package.json" ]; then
-        log_error "frontend/package.json not found"
-        exit 1
-    fi
-    log_success "Frontend package.json found"
-}
-
-# Pre-deployment checks
 pre_deployment_checks() {
     log_step "Running Pre-deployment Checks"
-    
-    # Check if CloudFormation template exists
-    if [ ! -f "infrastructure/cloudformation-template.yaml" ]; then
-        log_error "CloudFormation template not found: infrastructure/cloudformation-template.yaml"
-        exit 1
-    fi
-    log_success "CloudFormation template found"
-    
-    # Check if CSV files exist
-    if [ ! -f "data/CompanyQuestions.csv" ]; then
-        log_error "Company questions CSV not found: data/CompanyQuestions.csv"
-        exit 1
-    fi
-    log_success "Company questions CSV found"
-    
-    if [ ! -f "data/EmployeeQuestions.csv" ]; then
-        log_error "Employee questions CSV not found: data/EmployeeQuestions.csv"
-        exit 1
-    fi
-    log_success "Employee questions CSV found"
     
     # Check for existing stack
     log_info "Checking for existing CloudFormation stack..."
@@ -238,11 +311,10 @@ pre_deployment_checks() {
         
         if [[ "$stack_status" == "ROLLBACK_COMPLETE" || "$stack_status" == "CREATE_FAILED" || "$stack_status" == "DELETE_FAILED" ]]; then
             log_error "Stack is in a failed state: $stack_status"
-            log_info "Please delete the failed stack first: aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION"
+            log_info "Please delete the failed stack first or use --delete flag"
             exit 1
         fi
         
-        # Set flag that stack exists for changeset creation
         STACK_EXISTS=true
     else
         log_success "No existing stack found - ready for deployment"
@@ -250,7 +322,9 @@ pre_deployment_checks() {
     fi
 }
 
-# Enhanced CloudFormation deployment
+#####################################
+# Infrastructure Functions
+#####################################
 deploy_infrastructure() {
     log_step "Deploying CloudFormation Infrastructure"
     
@@ -259,43 +333,39 @@ deploy_infrastructure() {
     log_info "Stack Name: $STACK_NAME"
     log_info "Environment: $ENVIRONMENT"
     log_info "Region: $REGION"
-    log_info "Stack Exists: $STACK_EXISTS"
+    log_info "Owner: $OWNER_NAME"
     
-    # Validate template first
+    # Validate template
     log_info "Validating CloudFormation template..."
-    execute_command "aws cloudformation validate-template --template-body file://infrastructure/cloudformation-template.yaml --region $REGION" "Template validation"
+    execute_command "aws cloudformation validate-template --template-body file://$INFRASTRUCTURE_DIR/cloudformation-template.yaml --region $REGION" "Template validation"
     
-    # Create changeset for review
+    # Create changeset
     log_info "Creating changeset for review..."
     local changeset_name="changeset-$(date +%s)"
+    local changeset_type="CREATE"
     
-    # Determine changeset type based on whether stack exists
-    local changeset_type=""
     if [ "$STACK_EXISTS" = "true" ]; then
         changeset_type="UPDATE"
-        log_debug "Using UPDATE changeset type for existing stack"
-    else
-        changeset_type="CREATE"
-        log_debug "Using CREATE changeset type for new stack"
     fi
     
-    execute_command "aws cloudformation create-change-set --stack-name $STACK_NAME --template-body file://infrastructure/cloudformation-template.yaml --parameters ParameterKey=Environment,ParameterValue=$ENVIRONMENT --capabilities CAPABILITY_NAMED_IAM --change-set-name $changeset_name --change-set-type $changeset_type --region $REGION" "Changeset creation"
+    execute_command "aws cloudformation create-change-set \
+        --stack-name $STACK_NAME \
+        --template-body file://$INFRASTRUCTURE_DIR/cloudformation-template.yaml \
+        --parameters ParameterKey=Environment,ParameterValue=$ENVIRONMENT \
+        --capabilities CAPABILITY_NAMED_IAM \
+        --change-set-name $changeset_name \
+        --change-set-type $changeset_type \
+        --region $REGION" "Changeset creation"
     
     # Wait for changeset
     log_info "Waiting for changeset to be created..."
     aws cloudformation wait change-set-create-complete --stack-name $STACK_NAME --change-set-name $changeset_name --region $REGION
     
-    # Show changeset (if verbose)
-    if [ "$VERBOSE" = "true" ]; then
-        log_debug "Changeset details:"
-        aws cloudformation describe-change-set --stack-name $STACK_NAME --change-set-name $changeset_name --region $REGION
-    fi
-    
     # Execute changeset
     log_info "Executing changeset..."
     execute_command "aws cloudformation execute-change-set --stack-name $STACK_NAME --change-set-name $changeset_name --region $REGION" "Changeset execution"
     
-    # Wait for stack completion with progress
+    # Wait for completion with progress
     log_info "Waiting for stack deployment to complete..."
     local wait_start=$(date +%s)
     
@@ -316,7 +386,9 @@ deploy_infrastructure() {
                 echo ""
                 log_error "Stack deployment failed with status: $stack_status"
                 log_info "Checking stack events for error details..."
-                aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}' --output table
+                aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION \
+                    --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}' \
+                    --output table
                 exit 1
                 ;;
         esac
@@ -329,12 +401,19 @@ deploy_infrastructure() {
     log_success "Infrastructure deployment completed in ${cf_duration}s"
 }
 
-# Enhanced stack outputs retrieval
-get_stack_outputs() {
+fetch_stack_outputs() {
     log_step "Retrieving Stack Outputs"
     
     log_info "Fetching CloudFormation stack outputs..."
     
+    # Save outputs to file for reference
+    aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query 'Stacks[0].Outputs' \
+        --output json > "$OUTPUTS_FILE"
+    
+    # Extract key outputs
     CONFIG_BUCKET=$(aws cloudformation describe-stacks \
         --stack-name $STACK_NAME \
         --region $REGION \
@@ -365,47 +444,32 @@ get_stack_outputs() {
         --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDomainName'].OutputValue" \
         --output text)
     
-    # Validate outputs
-    if [ -z "$CONFIG_BUCKET" ] || [ "$CONFIG_BUCKET" = "None" ]; then
-        log_error "Failed to retrieve Config Bucket name"
-        exit 1
-    fi
+    # Validate all required outputs
+    local required_outputs=("CONFIG_BUCKET:$CONFIG_BUCKET" "WEBSITE_BUCKET:$WEBSITE_BUCKET" "API_URL:$API_URL" "CLOUDFRONT_URL:$CLOUDFRONT_URL")
     
-    if [ -z "$WEBSITE_BUCKET" ] || [ "$WEBSITE_BUCKET" = "None" ]; then
-        log_error "Failed to retrieve Website Bucket name"
-        exit 1
-    fi
-    
-    if [ -z "$API_URL" ] || [ "$API_URL" = "None" ]; then
-        log_error "Failed to retrieve API Gateway URL"
-        exit 1
-    fi
-    
-    if [ -z "$CLOUDFRONT_URL" ] || [ "$CLOUDFRONT_URL" = "None" ]; then
-        log_error "Failed to retrieve CloudFront URL"
-        exit 1
-    fi
+    for output in "${required_outputs[@]}"; do
+        local name="${output%%:*}"
+        local value="${output##*:}"
+        if [ -z "$value" ] || [ "$value" = "None" ]; then
+            log_error "Failed to retrieve required output: $name"
+            exit 1
+        fi
+        log_debug "$name: $value"
+    done
     
     log_success "All stack outputs retrieved successfully"
-    log_info "Config Bucket: $CONFIG_BUCKET"
-    log_info "Website Bucket: $WEBSITE_BUCKET"
-    log_info "API URL: $API_URL"
-    log_info "CloudFront URL: $CLOUDFRONT_URL"
 }
 
-# Enhanced CSV upload
-upload_config_files() {
-    log_step "Uploading Configuration Files"
+upload_configuration_files() {
+    log_step "Uploading Configuration Files to S3"
     
-    log_info "Uploading CSV configuration files to S3..."
+    log_info "Uploading CSV configuration files..."
     
     # Upload Company questions
-    log_info "Uploading CompanyQuestions.csv..."
-    execute_command "aws s3 cp data/CompanyQuestions.csv s3://$CONFIG_BUCKET/CompanyQuestions.csv --region $REGION" "Company questions upload"
+    execute_command "aws s3 cp $DATA_DIR/CompanyQuestions.csv s3://$CONFIG_BUCKET/CompanyQuestions.csv --region $REGION" "Company questions upload"
     
     # Upload Employee questions
-    log_info "Uploading EmployeeQuestions.csv..."
-    execute_command "aws s3 cp data/EmployeeQuestions.csv s3://$CONFIG_BUCKET/EmployeeQuestions.csv --region $REGION" "Employee questions upload"
+    execute_command "aws s3 cp $DATA_DIR/EmployeeQuestions.csv s3://$CONFIG_BUCKET/EmployeeQuestions.csv --region $REGION" "Employee questions upload"
     
     # Verify uploads
     log_info "Verifying uploaded files..."
@@ -416,15 +480,29 @@ upload_config_files() {
     log_success "EmployeeQuestions.csv uploaded (${employee_size} bytes)"
 }
 
-# Enhanced frontend deployment
-deploy_frontend() {
-    log_step "Building and Deploying React Application"
+#####################################
+# Frontend Functions
+#####################################
+create_environment_file() {
+    log_info "Creating production environment configuration..."
     
-    cd frontend
+    cat > "$ENV_FILE" << EOF
+# Generated by DMGT deployment script on $(date)
+REACT_APP_API_URL=$API_URL
+GENERATE_SOURCEMAP=false
+EOF
+    
+    log_success "Environment configuration created"
+    log_debug "API URL configured: $API_URL"
+}
+
+build_frontend() {
+    log_step "Building React Application"
+    
+    cd "$FRONTEND_DIR"
     local frontend_start_time=$(date +%s)
     
-    # Check Node.js version compatibility
-    log_info "Checking Node.js version compatibility..."
+    # Check Node.js version
     local node_version=$(node --version | cut -d'v' -f2)
     log_debug "Node.js version: $node_version"
     
@@ -433,13 +511,7 @@ deploy_frontend() {
     execute_command "npm ci --silent" "NPM dependencies installation"
     
     # Create environment configuration
-    log_info "Creating production environment configuration..."
-    cat > .env.production << EOF
-REACT_APP_API_URL=$API_URL
-GENERATE_SOURCEMAP=false
-EOF
-    log_success "Environment configuration created"
-    log_debug "API URL configured: $API_URL"
+    create_environment_file
     
     # Build the application
     log_info "Building React application for production..."
@@ -454,129 +526,100 @@ EOF
     local build_size=$(du -sh build | cut -f1)
     log_success "React build completed (Size: $build_size)"
     
-    # Upload to S3 with progress
-    log_info "Uploading React app to S3..."
-    execute_command "aws s3 sync build/ s3://$WEBSITE_BUCKET --delete --region $REGION" "React app S3 upload"
-    
-    # Get CloudFront distribution ID for cache invalidation
-    log_info "Getting CloudFront distribution ID for cache invalidation..."
-    local distribution_id=""
-    if [ ! -z "$CLOUDFRONT_DOMAIN" ] && [ "$CLOUDFRONT_DOMAIN" != "None" ]; then
-        # Extract distribution ID from domain name or use CloudFormation to get it
-        distribution_id=$(aws cloudformation describe-stack-resources \
-            --stack-name $STACK_NAME \
-            --region $REGION \
-            --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution'].PhysicalResourceId" \
-            --output text 2>/dev/null || echo "")
-        
-        if [ ! -z "$distribution_id" ] && [ "$distribution_id" != "None" ]; then
-            log_info "CloudFront Distribution ID: $distribution_id"
-            log_info "Creating CloudFront cache invalidation..."
-            local invalidation_id=$(aws cloudfront create-invalidation \
-                --distribution-id $distribution_id \
-                --paths "/*" \
-                --query 'Invalidation.Id' \
-                --output text 2>/dev/null || echo "")
-            
-            if [ ! -z "$invalidation_id" ] && [ "$invalidation_id" != "None" ]; then
-                log_success "CloudFront invalidation created: $invalidation_id"
-                log_info "Cache invalidation will complete in 10-15 minutes"
-            else
-                log_warning "CloudFront invalidation failed (non-critical)"
-            fi
-        else
-            log_warning "Could not determine CloudFront distribution ID for cache invalidation"
-        fi
-    else
-        log_warning "CloudFront domain not available for cache invalidation"
-    fi
-    
-    cd ..
+    cd "$SCRIPT_DIR"
     
     local frontend_end_time=$(date +%s)
     local frontend_duration=$((frontend_end_time - frontend_start_time))
-    log_success "Frontend deployment completed in ${frontend_duration}s"
+    log_success "Frontend build completed in ${frontend_duration}s"
 }
 
-# Enhanced deployment testing
+deploy_frontend() {
+    log_step "Deploying React Application to S3"
+    
+    # Upload to S3
+    log_info "Uploading React app to S3..."
+    execute_command "aws s3 sync $FRONTEND_DIR/build/ s3://$WEBSITE_BUCKET --delete --region $REGION" "React app S3 upload"
+    
+    # CloudFront cache invalidation
+    log_info "Creating CloudFront cache invalidation..."
+    local distribution_id=$(aws cloudformation describe-stack-resources \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution'].PhysicalResourceId" \
+        --output text 2>/dev/null || echo "")
+    
+    if [ ! -z "$distribution_id" ] && [ "$distribution_id" != "None" ]; then
+        log_info "CloudFront Distribution ID: $distribution_id"
+        local invalidation_id=$(aws cloudfront create-invalidation \
+            --distribution-id $distribution_id \
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text 2>/dev/null || echo "")
+        
+        if [ ! -z "$invalidation_id" ] && [ "$invalidation_id" != "None" ]; then
+            log_success "CloudFront invalidation created: $invalidation_id"
+            log_info "Cache invalidation will complete in 10-15 minutes"
+        else
+            log_warning "CloudFront invalidation failed (non-critical)"
+        fi
+    else
+        log_warning "Could not determine CloudFront distribution ID for cache invalidation"
+    fi
+    
+    log_success "Frontend deployment completed"
+}
+
+#####################################
+# Testing Functions
+#####################################
 test_deployment() {
     log_step "Testing Deployment"
     
     local test_start_time=$(date +%s)
     
-    # Test API endpoint - Company Configuration
-    log_info "Testing API Gateway endpoint - Company Configuration..."
-    local api_test_url="$API_URL/config/Company"
-    log_debug "Testing URL: $api_test_url"
+    # Test API endpoints
+    log_info "Testing API Gateway endpoints..."
     
-    local api_response=$(curl -s -w "%{http_code}" -o /tmp/api_test.json "$api_test_url" 2>/dev/null || echo "000")
-    if [ "$api_response" = "200" ]; then
-        log_success "✅ Company API endpoint is responding correctly"
-        if [ "$VERBOSE" = "true" ]; then
-            log_debug "API Response: $(cat /tmp/api_test.json | head -c 200)..."
-        fi
+    # Test Company configuration
+    local company_api_url="$API_URL/config/Company"
+    local company_response=$(curl -s -w "%{http_code}" -o /tmp/company_test.json "$company_api_url" 2>/dev/null || echo "000")
+    
+    if [ "$company_response" = "200" ]; then
+        log_success "✅ Company API endpoint responding correctly"
     else
-        log_warning "⚠️ Company API endpoint returned HTTP $api_response"
-        if [ -f /tmp/api_test.json ]; then
-            log_debug "Response: $(cat /tmp/api_test.json)"
-        fi
+        log_warning "⚠️ Company API endpoint returned HTTP $company_response"
     fi
     
-    # Test API endpoint - Employee Configuration
-    log_info "Testing API Gateway endpoint - Employee Configuration..."
-    local api_test_url_employee="$API_URL/config/Employee"
-    log_debug "Testing URL: $api_test_url_employee"
+    # Test Employee configuration
+    local employee_api_url="$API_URL/config/Employee"
+    local employee_response=$(curl -s -w "%{http_code}" -o /tmp/employee_test.json "$employee_api_url" 2>/dev/null || echo "000")
     
-    local api_response_employee=$(curl -s -w "%{http_code}" -o /tmp/api_test_employee.json "$api_test_url_employee" 2>/dev/null || echo "000")
-    if [ "$api_response_employee" = "200" ]; then
-        log_success "✅ Employee API endpoint is responding correctly"
-        if [ "$VERBOSE" = "true" ]; then
-            log_debug "API Response: $(cat /tmp/api_test_employee.json | head -c 200)..."
-        fi
+    if [ "$employee_response" = "200" ]; then
+        log_success "✅ Employee API endpoint responding correctly"
     else
-        log_warning "⚠️ Employee API endpoint returned HTTP $api_response_employee"
-        if [ -f /tmp/api_test_employee.json ]; then
-            log_debug "Response: $(cat /tmp/api_test_employee.json)"
-        fi
+        log_warning "⚠️ Employee API endpoint returned HTTP $employee_response"
     fi
     
-    # Test website accessibility
-    log_info "Testing CloudFront website accessibility..."
-    log_debug "Testing URL: $CLOUDFRONT_URL"
-    
+    # Test website
+    log_info "Testing CloudFront website..."
     local website_response=$(curl -s -w "%{http_code}" -o /tmp/website_test.html "$CLOUDFRONT_URL" 2>/dev/null || echo "000")
+    
     if [ "$website_response" = "200" ]; then
-        log_success "✅ Website is accessible via CloudFront"
-        # Check if it's actually the React app by looking for React-specific content
-        if grep -q "react" /tmp/website_test.html 2>/dev/null || grep -q "root" /tmp/website_test.html 2>/dev/null; then
-            log_success "✅ React application is properly served"
-        else
-            log_warning "⚠️ Website accessible but may not be the React app"
+        log_success "✅ Website accessible via CloudFront"
+        # Check if it's the React app
+        if grep -q "root" /tmp/website_test.html 2>/dev/null; then
+            log_success "✅ React application properly served"
         fi
     else
         log_warning "⚠️ Website returned HTTP $website_response"
-        if [ -f /tmp/website_test.html ]; then
-            log_debug "Response sample: $(head -c 200 /tmp/website_test.html)"
-        fi
     fi
     
-    # Test S3 bucket access
-    log_info "Testing S3 bucket accessibility..."
+    # Test S3 bucket
     local bucket_test=$(aws s3 ls s3://$CONFIG_BUCKET --region $REGION 2>/dev/null | wc -l)
     if [ $bucket_test -gt 0 ]; then
         log_success "✅ S3 configuration bucket accessible ($bucket_test files)"
     else
-        log_warning "⚠️ S3 configuration bucket may be empty or inaccessible"
-    fi
-    
-    # Test responses endpoint
-    log_info "Testing responses endpoint availability..."
-    local responses_test_url="$API_URL/responses?companyId=TEST"
-    local responses_response=$(curl -s -w "%{http_code}" -o /tmp/responses_test.json "$responses_test_url" 2>/dev/null || echo "000")
-    if [ "$responses_response" = "200" ]; then
-        log_success "✅ Responses API endpoint is working"
-    else
-        log_warning "⚠️ Responses API endpoint returned HTTP $responses_response"
+        log_warning "⚠️ S3 configuration bucket may be empty"
     fi
     
     local test_end_time=$(date +%s)
@@ -584,7 +627,117 @@ test_deployment() {
     log_success "Deployment testing completed in ${test_duration}s"
 }
 
-# Enhanced deployment summary with prominent URL display
+#####################################
+# Destruction Functions
+#####################################
+destroy_infrastructure() {
+    log_step "Destroying Infrastructure"
+    
+    if [ "$FORCE_DELETE" != "true" ]; then
+        echo -e "\n${BOLD}${RED}⚠️  DANGER: PERMANENT RESOURCE DELETION ⚠️${NC}\n"
+        echo -e "${BOLD}This will permanently delete:${NC}"
+        echo -e "  ${RED}•${NC} CloudFormation stack: ${CYAN}$STACK_NAME${NC}"
+        echo -e "  ${RED}•${NC} All S3 buckets and their contents"
+        echo -e "  ${RED}•${NC} All form responses and data"
+        echo -e "  ${RED}•${NC} Lambda functions and API Gateway"
+        echo -e "  ${RED}•${NC} CloudFront distribution"
+        echo ""
+        echo -e "${BOLD}Environment: ${RED}$ENVIRONMENT${NC} | Region: ${RED}$REGION${NC}${NC}"
+        echo -e "${BOLD}${RED}This action CANNOT be undone!${NC}"
+        echo ""
+        
+        read -p "Are you absolutely sure? Type 'DELETE' to confirm: " confirmation
+        
+        if [ "$confirmation" != "DELETE" ]; then
+            log_info "Destruction cancelled by user"
+            exit 0
+        fi
+    fi
+    
+    # Empty S3 buckets first
+    log_info "Emptying S3 buckets before stack deletion..."
+    
+    # Get bucket names from stack if it exists
+    if aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
+        local config_bucket=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='ConfigBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
+        local website_bucket=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='WebsiteBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
+        local responses_bucket=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
+        # Empty each bucket
+        for bucket in "$config_bucket" "$website_bucket" "$responses_bucket"; do
+            if [ ! -z "$bucket" ] && [ "$bucket" != "None" ]; then
+                log_info "Emptying bucket: $bucket"
+                execute_command "aws s3 rm s3://$bucket --recursive --region $REGION" "Empty bucket $bucket" "true"
+                
+                # Handle versioned objects
+                aws s3api list-object-versions --bucket "$bucket" --region $REGION \
+                    --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | \
+                    while read key version; do
+                        if [ ! -z "$key" ] && [ ! -z "$version" ]; then
+                            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
+                        fi
+                    done
+            fi
+        done
+    fi
+    
+    # Delete CloudFormation stack
+    log_info "Deleting CloudFormation stack: $STACK_NAME"
+    execute_command "aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION" "Stack deletion"
+    
+    # Wait for deletion
+    log_info "Waiting for stack deletion to complete..."
+    local wait_start=$(date +%s)
+    
+    while true; do
+        local stack_status=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DELETE_COMPLETE")
+        local wait_current=$(date +%s)
+        local wait_duration=$((wait_current - wait_start))
+        
+        printf "\r${CYAN}⏳ Waiting for stack deletion... %ds (Status: %s)${NC}" $wait_duration "$stack_status"
+        
+        case $stack_status in
+            "DELETE_COMPLETE")
+                echo ""
+                log_success "Stack deletion completed successfully"
+                break
+                ;;
+            "DELETE_FAILED")
+                echo ""
+                log_error "Stack deletion failed"
+                aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION \
+                    --query 'StackEvents[?ResourceStatus==`DELETE_FAILED`].{Time:Timestamp,Resource:LogicalResourceId,Reason:ResourceStatusReason}' \
+                    --output table
+                exit 1
+                ;;
+        esac
+        
+        sleep 10
+    done
+    
+    # Cleanup output files
+    rm -f "$OUTPUTS_FILE" "$ENV_FILE"
+    
+    log_success "Infrastructure destruction completed"
+}
+
+#####################################
+# Summary Functions
+#####################################
 deployment_summary() {
     log_step "Deployment Summary"
     
@@ -595,79 +748,101 @@ deployment_summary() {
     
     echo -e "\n${BOLD}${GREEN}🎉 DEPLOYMENT COMPLETED SUCCESSFULLY! 🎉${NC}\n"
     
-    # Prominent URL Display Box
+    # Prominent URL Display
     echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}║                                 🌐 ACCESS URLS                                ║${NC}"
+    echo -e "${BOLD}${CYAN}║                          🌐 DMGT BASIC FORM ACCESS URLS                      ║${NC}"
     echo -e "${BOLD}${CYAN}╠═══════════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
     echo -e "${BOLD}${CYAN}║  📱 Application Website:                                                      ║${NC}"
     echo -e "${BOLD}${CYAN}║     ${GREEN}${CLOUDFRONT_URL}${CYAN}                    ║${NC}"
     echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
-    echo -e "${BOLD}${CYAN}║  🔗 API Gateway Endpoints:                                                    ║${NC}"
+    echo -e "${BOLD}${CYAN}║  🔗 API Gateway:                                                              ║${NC}"
     echo -e "${BOLD}${CYAN}║     ${GREEN}${API_URL}${CYAN}                ║${NC}"
     echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
-    echo -e "${BOLD}${CYAN}║  📋 Test API Endpoints:                                                       ║${NC}"
-    echo -e "${BOLD}${CYAN}║     Company Config: ${GREEN}${API_URL}/config/Company${CYAN}         ║${NC}"
-    echo -e "${BOLD}${CYAN}║     Employee Config: ${GREEN}${API_URL}/config/Employee${CYAN}        ║${NC}"
-    echo -e "${BOLD}${CYAN}║     Company Status: ${GREEN}${API_URL}/responses?companyId=TEST${CYAN}   ║${NC}"
+    echo -e "${BOLD}${CYAN}║  📋 Test Endpoints:                                                           ║${NC}"
+    echo -e "${BOLD}${CYAN}║     Company Config:  ${GREEN}${API_URL}/config/Company${CYAN}       ║${NC}"
+    echo -e "${BOLD}${CYAN}║     Employee Config: ${GREEN}${API_URL}/config/Employee${CYAN}      ║${NC}"
+    echo -e "${BOLD}${CYAN}║     Status Check:    ${GREEN}${API_URL}/responses?companyId=TEST${CYAN}  ║${NC}"
     echo -e "${BOLD}${CYAN}║                                                                               ║${NC}"
     echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     
-    echo -e "${BOLD}📋 Deployment Summary:${NC}"
+    echo -e "${BOLD}📋 Deployment Details:${NC}"
     echo -e "Environment: ${CYAN}$ENVIRONMENT${NC}"
-    echo -e "Stack Name: ${CYAN}$STACK_NAME${NC}"
     echo -e "Region: ${CYAN}$REGION${NC}"
+    echo -e "Owner: ${CYAN}$OWNER_NAME${NC}"
     echo -e "Duration: ${CYAN}${minutes}m ${seconds}s${NC}"
+    echo -e "Stack: ${CYAN}$STACK_NAME${NC}"
     echo ""
     
-    echo -e "${BOLD}📚 AWS Resources Created:${NC}"
-    echo -e "• CloudFormation Stack: ${CYAN}$STACK_NAME${NC}"
-    echo -e "• S3 Config Bucket: ${CYAN}$CONFIG_BUCKET${NC}"
-    echo -e "• S3 Website Bucket: ${CYAN}$WEBSITE_BUCKET${NC}"
-    echo -e "• API Gateway: ${CYAN}$(echo $API_URL | cut -d'/' -f3)${NC}"
-    echo -e "• CloudFront Distribution: ${CYAN}$CLOUDFRONT_DOMAIN${NC}"
+    echo -e "${BOLD}📚 AWS Resources:${NC}"
+    echo -e "• Config Bucket: ${CYAN}$CONFIG_BUCKET${NC}"
+    echo -e "• Website Bucket: ${CYAN}$WEBSITE_BUCKET${NC}"
+    echo -e "• CloudFront: ${CYAN}$CLOUDFRONT_DOMAIN${NC}"
     echo ""
     
     echo -e "${BOLD}📝 Next Steps:${NC}"
     echo -e "1. ${WHITE}📱 Access your application: ${GREEN}$CLOUDFRONT_URL${NC}"
-    echo -e "2. ${WHITE}🔗 Test the API endpoints using the URLs above${NC}"
+    echo -e "2. ${WHITE}🧪 Test API endpoints using the URLs above${NC}"
     echo -e "3. ${WHITE}📨 Share Company IDs with your clients${NC}"
-    echo -e "4. ${WHITE}📊 Monitor CloudWatch logs:${NC}"
-    echo -e "   ${CYAN}aws logs describe-log-groups --region $REGION --name-prefix /aws/lambda/dmgt-basic-form${NC}"
-    echo -e "5. ${WHITE}✏️ Edit questions: Update CSV files in S3 bucket ${CYAN}$CONFIG_BUCKET${NC}"
-    echo -e "6. ${WHITE}🗂️ Access form responses in S3 bucket: ${CYAN}$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" --output text)${NC}"
+    echo -e "4. ${WHITE}📊 Monitor CloudWatch logs for usage${NC}"
+    echo -e "5. ${WHITE}✏️ Edit questions by updating CSV files in S3${NC}"
     echo ""
     
-    if [ ${#ERRORS[@]} -gt 0 ]; then
-        echo -e "${BOLD}${YELLOW}⚠️  Warnings/Errors During Deployment:${NC}"
-        for error in "${ERRORS[@]}"; do
-            echo -e "  • ${YELLOW}$error${NC}"
+    if [ ${#WARNINGS[@]} -gt 0 ]; then
+        echo -e "${BOLD}${YELLOW}⚠️  Warnings:${NC}"
+        for warning in "${WARNINGS[@]}"; do
+            echo -e "  • ${YELLOW}$warning${NC}"
         done
         echo ""
     fi
     
-    echo -e "${BOLD}🏷️  All resources tagged with: ${CYAN}Project=dmgt-basic-form${NC}"
-    echo -e "${BOLD}🚀 Ready to collect data and AI readiness assessments!${NC}"
+    echo -e "${BOLD}🧪 Quick Tests:${NC}"
+    echo -e "curl \"${API_URL}/config/Company\""
+    echo -e "curl \"${API_URL}/config/Employee\""
+    echo -e "curl \"${API_URL}/responses?companyId=TEST\""
     echo ""
     
-    # Quick test suggestions
-    echo -e "${BOLD}🧪 Quick Tests:${NC}"
-    echo -e "• ${WHITE}curl \"${API_URL}/config/Company\"${NC}"
-    echo -e "• ${WHITE}curl \"${API_URL}/config/Employee\"${NC}"
-    echo -e "• ${WHITE}curl \"${API_URL}/responses?companyId=TEST\"${NC}"
-    echo ""
+    echo -e "${BOLD}🎯 DMGT Basic Form is ready to collect data and assess AI readiness!${NC}"
 }
 
-# Error handler
+destruction_summary() {
+    local end_time=$(date +%s)
+    local total_duration=$((end_time - START_TIME))
+    local minutes=$((total_duration / 60))
+    local seconds=$((total_duration % 60))
+    
+    echo -e "\n${BOLD}${GREEN}✅ DESTRUCTION COMPLETED SUCCESSFULLY!${NC}\n"
+    
+    echo -e "${BOLD}📋 Destruction Summary:${NC}"
+    echo -e "Environment: ${CYAN}$ENVIRONMENT${NC}"
+    echo -e "Region: ${CYAN}$REGION${NC}"
+    echo -e "Duration: ${CYAN}${minutes}m ${seconds}s${NC}"
+    echo ""
+    
+    echo -e "${BOLD}🗑️ Resources Destroyed:${NC}"
+    echo -e "• CloudFormation Stack: ${GREEN}✓${NC}"
+    echo -e "• S3 Buckets: ${GREEN}✓${NC}"
+    echo -e "• Lambda Functions: ${GREEN}✓${NC}"
+    echo -e "• API Gateway: ${GREEN}✓${NC}"
+    echo -e "• CloudFront Distribution: ${GREEN}✓${NC}"
+    echo ""
+    
+    echo -e "${BOLD}💡 You can redeploy anytime using: ${CYAN}$0${NC}"
+}
+
+#####################################
+# Error Handling
+#####################################
 handle_error() {
     local exit_code=$?
     local line_number=$1
     
     log_error "Script failed at line $line_number with exit code $exit_code"
     
+    echo -e "\n${BOLD}${RED}❌ DEPLOYMENT FAILED${NC}\n"
+    
     if [ ${#ERRORS[@]} -gt 0 ]; then
-        echo -e "\n${BOLD}${RED}❌ DEPLOYMENT FAILED${NC}\n"
         echo -e "${BOLD}Errors encountered:${NC}"
         for error in "${ERRORS[@]}"; do
             echo -e "  • ${RED}$error${NC}"
@@ -678,91 +853,92 @@ handle_error() {
     echo -e "1. Check AWS credentials: ${CYAN}aws sts get-caller-identity${NC}"
     echo -e "2. Check region: ${CYAN}aws configure get region${NC}"
     echo -e "3. View stack events: ${CYAN}aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION${NC}"
-    echo -e "4. Run with verbose mode: ${CYAN}VERBOSE=true ./deploy.sh${NC}"
+    echo -e "4. Run with verbose mode: ${CYAN}$0 --verbose${NC}"
+    echo -e "5. Check logs: ${CYAN}cat /tmp/dmgt_deploy_output.log${NC}"
     echo ""
     
     exit $exit_code
 }
 
-# Usage function
-show_usage() {
-    echo -e "${BOLD}DMGT Basic Form Deployment Script v$SCRIPT_VERSION${NC}"
-    echo ""
-    echo -e "${BOLD}Usage:${NC}"
-    echo -e "  ./deploy.sh [OPTIONS]"
-    echo ""
-    echo -e "${BOLD}Environment Variables:${NC}"
-    echo -e "  ENVIRONMENT    Deployment environment (default: prod)"
-    echo -e "  AWS_REGION     AWS region (default: us-east-1)"
-    echo -e "  VERBOSE        Enable verbose logging (default: false)"
-    echo -e "  DRY_RUN        Show commands without executing (default: false)"
-    echo ""
-    echo -e "${BOLD}Examples:${NC}"
-    echo -e "  ${CYAN}./deploy.sh${NC}                    # Standard deployment"
-    echo -e "  ${CYAN}VERBOSE=true ./deploy.sh${NC}       # Verbose logging"
-    echo -e "  ${CYAN}DRY_RUN=true ./deploy.sh${NC}       # Preview commands"
-    echo -e "  ${CYAN}ENVIRONMENT=dev ./deploy.sh${NC}    # Deploy to dev environment"
-    echo ""
-}
-
-# Main execution function
+#####################################
+# Main Execution
+#####################################
 main() {
     # Set up error handling
     trap 'handle_error $LINENO' ERR
     
-    # Handle command line arguments
-    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-        show_usage
-        exit 0
-    fi
+    # Parse command line arguments
+    parse_arguments "$@"
     
     # Script header
     echo -e "${BOLD}${BLUE}"
-    printf '=%.0s' {1..72}
+    printf '=%.0s' {1..80}
     echo ""
-    echo "  $SCRIPT_NAME v$SCRIPT_VERSION - Enhanced Deployment Script"
-    printf '=%.0s' {1..72}
+    echo "  DMGT Basic Form - Enhanced Deployment Script"
+    printf '=%.0s' {1..80}
     echo -e "${NC}"
     
-    log_info "Starting deployment of DMGT Basic Form"
+    log_info "Starting DMGT Basic Form deployment"
+    log_info "Mode: $MODE"
     log_info "Environment: $ENVIRONMENT"
     log_info "Region: $REGION"
-    log_info "Stack Name: $STACK_NAME"
-    log_info "Verbose Mode: $VERBOSE"
+    log_info "Owner: $OWNER_NAME"
+    log_info "Verbose: $VERBOSE"
     log_info "Dry Run: $DRY_RUN"
     
     if [ "$DRY_RUN" = "true" ]; then
         log_warning "DRY RUN MODE - No actual changes will be made"
     fi
     
-    # Execute deployment steps
-    check_aws_cli
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    check_nodejs
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    pre_deployment_checks
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    deploy_infrastructure
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    get_stack_outputs
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    upload_config_files
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    deploy_frontend
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    test_deployment
-    show_progress $STEP_COUNT $TOTAL_STEPS
-    
-    echo "" # Clear progress line
-    deployment_summary
+    # Execute based on mode
+    case $MODE in
+        "delete")
+            TOTAL_STEPS=2
+            check_prerequisites
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            destroy_infrastructure
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            echo ""
+            destruction_summary
+            ;;
+        "frontend-only")
+            TOTAL_STEPS=4
+            check_prerequisites
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            fetch_stack_outputs
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            build_frontend
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            deploy_frontend
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            echo ""
+            log_success "Frontend-only deployment completed!"
+            echo -e "🌐 Your application: ${GREEN}$CLOUDFRONT_URL${NC}"
+            ;;
+        *)
+            # Full deployment
+            check_prerequisites
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            pre_deployment_checks
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            deploy_infrastructure
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            fetch_stack_outputs
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            upload_configuration_files
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            build_frontend
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            deploy_frontend
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            test_deployment
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            echo ""
+            deployment_summary
+            ;;
+    esac
 }
 
-# Run main function with all arguments
+# Change to script directory and run
+cd "$SCRIPT_DIR"
 main "$@"

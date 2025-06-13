@@ -1,16 +1,36 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail # -e: exit on error, -u: unset variables are errors, -o pipefail: pipe failures
 
-# DMGT Basic Form - Enhanced Destruction Script
-# This script safely destroys all deployed resources with comprehensive logging
+#####################################
+# DMGT Basic Form - Professional Destruction Script
+# Safely destroys all deployed resources with comprehensive logging
+#####################################
 
-set -e
+# Compute paths relative to this script's location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Script configuration
-SCRIPT_NAME="DMGT Destroy"
-SCRIPT_VERSION="2.1"
+# Configuration with defaults
+ENVIRONMENT=${ENVIRONMENT:-prod}
+REGION=${AWS_REGION:-us-east-1}
+OWNER_NAME=${OWNER_NAME:-$(whoami)}
+VERBOSE=${VERBOSE:-false}
+DRY_RUN=${DRY_RUN:-false}
+FORCE=${FORCE:-false}
+
+# Stack and resource naming
+STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
+
+# Global tracking variables
+STEP_COUNT=0
+TOTAL_STEPS=6
 START_TIME=$(date +%s)
+ERRORS=()
+WARNINGS=()
+ORPHANED_RESOURCES=()
 
-# Color codes for better visibility
+#####################################
+# Color codes and formatting
+#####################################
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -21,28 +41,9 @@ WHITE='\033[0;37m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Configuration with defaults
-ENVIRONMENT=${ENVIRONMENT:-dev}
-STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
-REGION=${AWS_REGION:-eu-west-2}
-VERBOSE=${VERBOSE:-false}
-DRY_RUN=${DRY_RUN:-false}
-FORCE=${FORCE:-false}
-
-# Global variables for tracking
-STEP_COUNT=0
-TOTAL_STEPS=7
-ERRORS=()
-WARNINGS=()
-
-# Function to create separator line
-separator_line() {
-    printf "${BLUE}"
-    printf '=%.0s' {1..80}
-    printf "${NC}\n"
-}
-
-# Logging functions
+#####################################
+# Logging Functions
+#####################################
 log_info() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${CYAN}[INFO]${NC} ${timestamp} - $1"
@@ -75,11 +76,16 @@ log_debug() {
 log_step() {
     STEP_COUNT=$((STEP_COUNT + 1))
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "\n${BOLD}${BLUE}[STEP $STEP_COUNT/$TOTAL_STEPS]${NC} ${timestamp} - $1"
+    echo -e "\n${BOLD}${RED}[STEP $STEP_COUNT/$TOTAL_STEPS]${NC} ${timestamp} - $1"
     separator_line
 }
 
-# Progress bar function
+separator_line() {
+    printf "${RED}"
+    printf '=%.0s' {1..80}
+    printf "${NC}\n"
+}
+
 show_progress() {
     local current=$1
     local total=$2
@@ -95,7 +101,9 @@ show_progress() {
     printf "${NC}${CYAN}] %d%% (%d/%d)${NC}" $percentage $current $total
 }
 
-# Function to execute commands with logging
+#####################################
+# Command Execution with Logging
+#####################################
 execute_command() {
     local cmd="$1"
     local description="$2"
@@ -110,15 +118,14 @@ execute_command() {
         return 0
     fi
     
+    local result=0
     if [ "$VERBOSE" = "true" ]; then
-        eval $cmd
-        local result=$?
+        eval $cmd || result=$?
     else
-        eval $cmd > /tmp/destroy_output.log 2>&1
-        local result=$?
+        eval $cmd > /tmp/dmgt_destroy_output.log 2>&1 || result=$?
         if [ $result -ne 0 ] && [ "$allow_failure" != "true" ]; then
             log_error "Command failed. Output:"
-            cat /tmp/destroy_output.log
+            cat /tmp/dmgt_destroy_output.log
         fi
     fi
     
@@ -135,10 +142,81 @@ execute_command() {
     fi
 }
 
-# Enhanced AWS CLI check
-check_aws_cli() {
-    log_step "Checking AWS CLI Prerequisites"
+#####################################
+# Argument Parsing
+#####################################
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --environment=*)
+                ENVIRONMENT="${1#*=}"
+                STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
+                shift
+                ;;
+            --region=*)
+                REGION="${1#*=}"
+                shift
+                ;;
+            --owner=*)
+                OWNER_NAME="${1#*=}"
+                shift
+                ;;
+            --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --force)
+                FORCE=true
+                shift
+                ;;
+            --help|-h)
+                show_usage
+                exit 0
+                ;;
+            *)
+                log_error "Unknown argument: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+show_usage() {
+    echo -e "${BOLD}DMGT Basic Form Destruction Script${NC}"
+    echo ""
+    echo -e "${BOLD}Usage:${NC}"
+    echo -e "  $0 [OPTIONS]"
+    echo ""
+    echo -e "${BOLD}Options:${NC}"
+    echo -e "  --environment=ENV : Set environment to destroy (default: prod)"
+    echo -e "  --region=REGION   : Set AWS region (default: us-east-1)"
+    echo -e "  --owner=NAME      : Set owner name (default: current username)"
+    echo -e "  --verbose         : Enable verbose logging"
+    echo -e "  --dry-run         : Show commands without executing"
+    echo -e "  --force           : Skip confirmation prompts"
+    echo -e "  --help            : Show this help message"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo -e "  ${CYAN}$0 --environment=dev${NC}                # Destroy dev environment"
+    echo -e "  ${CYAN}$0 --environment=prod --verbose${NC}     # Destroy prod with verbose logging"
+    echo -e "  ${CYAN}$0 --force --environment=dev${NC}       # Destroy dev without confirmation"
+    echo ""
+    echo -e "${BOLD}${RED}WARNING: This operation is irreversible!${NC}"
+    echo ""
+}
+
+#####################################
+# Validation Functions
+#####################################
+check_prerequisites() {
+    log_step "🔍 Checking Prerequisites"
     
+    # Check AWS CLI
     if ! command -v aws &> /dev/null; then
         log_error "AWS CLI is not installed. Please install it first."
         log_info "Install AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
@@ -155,28 +233,215 @@ check_aws_cli() {
     fi
     
     local caller_identity=$(aws sts get-caller-identity --output json 2>/dev/null)
-    local account_id=$(echo $caller_identity | grep -o '"Account":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
-    local user_arn=$(echo $caller_identity | grep -o '"Arn":"[^"]*"' | cut -d'"' -f4 2>/dev/null || echo "N/A")
+    local account_id=$(echo $caller_identity | jq -r '.Account // "N/A"')
+    local user_arn=$(echo $caller_identity | jq -r '.Arn // "N/A"')
     
     log_success "AWS credentials valid"
     log_debug "Account ID: $account_id"
     log_debug "User ARN: $user_arn"
     
     # Verify region
-    log_info "Checking AWS region configuration..."
-    if [ -z "$REGION" ]; then
-        REGION=$(aws configure get region)
-        if [ -z "$REGION" ]; then
-            log_warning "No region set, defaulting to us-east-1"
-            REGION="us-east-1"
-        fi
+    log_info "Verifying AWS region: $REGION"
+    if ! aws ec2 describe-regions --region $REGION > /dev/null 2>&1; then
+        log_error "Cannot connect to region $REGION"
+        exit 1
     fi
-    log_success "Using AWS region: $REGION"
+    log_success "Region connectivity verified"
 }
 
-# Enhanced confirmation with resource preview
+#####################################
+# Resource Discovery Functions
+#####################################
+discover_resources() {
+    log_step "🔍 Discovering AWS Resources"
+    
+    # Check for CloudFormation stack
+    log_info "Checking for CloudFormation stack: $STACK_NAME"
+    
+    local stack_exists=false
+    local stack_status=""
+    
+    if aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
+        stack_exists=true
+        stack_status=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].StackStatus' --output text)
+        
+        local creation_time=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].CreationTime' --output text)
+        local last_updated=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --query 'Stacks[0].LastUpdatedTime' --output text 2>/dev/null || echo "Never")
+        
+        log_success "Found CloudFormation stack"
+        log_info "Stack Status: $stack_status"
+        log_info "Created: $creation_time"
+        log_info "Last Updated: $last_updated"
+        
+        # Get stack outputs for bucket names
+        CONFIG_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='ConfigBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
+        WEBSITE_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='WebsiteBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
+        RESPONSES_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
+        log_debug "Config Bucket: $CONFIG_BUCKET"
+        log_debug "Website Bucket: $WEBSITE_BUCKET"
+        log_debug "Responses Bucket: $RESPONSES_BUCKET"
+    else
+        log_warning "CloudFormation stack $STACK_NAME not found"
+    fi
+    
+    # Check for orphaned resources
+    log_info "Scanning for orphaned DMGT resources..."
+    discover_orphaned_resources
+    
+    if [ "$stack_exists" = false ] && [ ${#ORPHANED_RESOURCES[@]} -eq 0 ]; then
+        log_success "No resources found to destroy"
+        echo -e "\n${BOLD}${GREEN}✅ Nothing to clean up - environment is already clean!${NC}"
+        exit 0
+    fi
+    
+    # Show what will be destroyed
+    show_destruction_preview
+}
+
+discover_orphaned_resources() {
+    local found_orphans=false
+    
+    # Check for S3 buckets
+    log_debug "Checking for orphaned S3 buckets..."
+    local buckets=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'dmgt-basic-form')].Name" --output text 2>/dev/null || echo "")
+    if [ ! -z "$buckets" ]; then
+        for bucket in $buckets; do
+            ORPHANED_RESOURCES+=("S3_BUCKET:$bucket")
+            log_warning "Found orphaned S3 bucket: $bucket"
+            found_orphans=true
+        done
+    fi
+    
+    # Check for Lambda functions
+    log_debug "Checking for orphaned Lambda functions..."
+    local functions=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'dmgt-basic-form')].FunctionName" --output text --region $REGION 2>/dev/null || echo "")
+    if [ ! -z "$functions" ]; then
+        for func in $functions; do
+            ORPHANED_RESOURCES+=("LAMBDA:$func")
+            log_warning "Found orphaned Lambda function: $func"
+            found_orphans=true
+        done
+    fi
+    
+    # Check for API Gateways
+    log_debug "Checking for orphaned API Gateways..."
+    local apis=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].{id:id,name:name}" --output text --region $REGION 2>/dev/null || echo "")
+    if [ ! -z "$apis" ]; then
+        echo "$apis" | while read -r id name; do
+            if [ ! -z "$id" ]; then
+                ORPHANED_RESOURCES+=("API_GATEWAY:$id:$name")
+                log_warning "Found orphaned API Gateway: $name ($id)"
+                found_orphans=true
+            fi
+        done
+    fi
+    
+    # Check for CloudFront distributions
+    log_debug "Checking for orphaned CloudFront distributions..."
+    local distributions=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Comment, 'dmgt-basic-form')].{Id:Id,DomainName:DomainName,Status:Status}" --output text 2>/dev/null || echo "")
+    if [ ! -z "$distributions" ]; then
+        echo "$distributions" | while read -r id domain status; do
+            if [ ! -z "$id" ]; then
+                ORPHANED_RESOURCES+=("CLOUDFRONT:$id:$domain:$status")
+                log_warning "Found orphaned CloudFront distribution: $domain ($id) - Status: $status"
+                found_orphans=true
+            fi
+        done
+    fi
+    
+    # Check for IAM roles
+    log_debug "Checking for orphaned IAM roles..."
+    local roles=$(aws iam list-roles --query "Roles[?contains(RoleName, 'dmgt-basic-form')].RoleName" --output text 2>/dev/null || echo "")
+    if [ ! -z "$roles" ]; then
+        for role in $roles; do
+            ORPHANED_RESOURCES+=("IAM_ROLE:$role")
+            log_warning "Found orphaned IAM role: $role"
+            found_orphans=true
+        done
+    fi
+    
+    if [ "$found_orphans" = true ]; then
+        log_warning "Found ${#ORPHANED_RESOURCES[@]} orphaned resources"
+    else
+        log_success "No orphaned resources found"
+    fi
+}
+
+show_destruction_preview() {
+    echo -e "\n${BOLD}${RED}📋 DESTRUCTION PREVIEW${NC}"
+    separator_line
+    
+    # Show stack resources
+    if aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
+        echo -e "${BOLD}CloudFormation Stack Resources:${NC}"
+        echo -e "  🗂️  Stack: ${CYAN}$STACK_NAME${NC}"
+        if [ ! -z "$CONFIG_BUCKET" ] && [ "$CONFIG_BUCKET" != "None" ]; then
+            echo -e "  🪣  Config Bucket: ${CYAN}$CONFIG_BUCKET${NC}"
+        fi
+        if [ ! -z "$WEBSITE_BUCKET" ] && [ "$WEBSITE_BUCKET" != "None" ]; then
+            echo -e "  🪣  Website Bucket: ${CYAN}$WEBSITE_BUCKET${NC}"
+        fi
+        if [ ! -z "$RESPONSES_BUCKET" ] && [ "$RESPONSES_BUCKET" != "None" ]; then
+            echo -e "  🪣  Responses Bucket: ${CYAN}$RESPONSES_BUCKET${NC}"
+        fi
+        echo -e "  ⚡  Lambda Functions: ${CYAN}All stack Lambda functions${NC}"
+        echo -e "  🌐  API Gateway: ${CYAN}All stack API resources${NC}"
+        echo -e "  ☁️   CloudFront Distribution: ${CYAN}Stack CloudFront${NC}"
+        echo -e "  🔐  IAM Roles: ${CYAN}All stack IAM resources${NC}"
+        echo ""
+    fi
+    
+    # Show orphaned resources
+    if [ ${#ORPHANED_RESOURCES[@]} -gt 0 ]; then
+        echo -e "${BOLD}Orphaned Resources:${NC}"
+        for resource in "${ORPHANED_RESOURCES[@]}"; do
+            local type="${resource%%:*}"
+            local details="${resource#*:}"
+            case $type in
+                "S3_BUCKET")
+                    echo -e "  🪣  S3 Bucket: ${YELLOW}$details${NC}"
+                    ;;
+                "LAMBDA")
+                    echo -e "  ⚡  Lambda Function: ${YELLOW}$details${NC}"
+                    ;;
+                "API_GATEWAY")
+                    local id="${details%%:*}"
+                    local name="${details#*:}"
+                    echo -e "  🌐  API Gateway: ${YELLOW}$name ($id)${NC}"
+                    ;;
+                "CLOUDFRONT")
+                    local parts=(${details//:/ })
+                    echo -e "  ☁️   CloudFront: ${YELLOW}${parts[1]} (${parts[0]}) - ${parts[2]}${NC}"
+                    ;;
+                "IAM_ROLE")
+                    echo -e "  🔐  IAM Role: ${YELLOW}$details${NC}"
+                    ;;
+            esac
+        done
+        echo ""
+    fi
+}
+
+#####################################
+# Confirmation Function
+#####################################
 confirm_destruction() {
-    log_step "Destruction Confirmation"
+    log_step "⚠️  Destruction Confirmation"
     
     if [ "$FORCE" = "true" ]; then
         log_warning "FORCE mode enabled - skipping confirmation"
@@ -185,28 +450,27 @@ confirm_destruction() {
     
     echo -e "\n${BOLD}${RED}⚠️  DANGER: PERMANENT RESOURCE DELETION ⚠️${NC}\n"
     
-    echo -e "${BOLD}This will permanently delete ALL resources including:${NC}"
-    echo -e "  ${RED}•${NC} CloudFormation stack: ${CYAN}$STACK_NAME${NC}"
+    echo -e "${BOLD}This will permanently delete ALL resources shown above including:${NC}"
     echo -e "  ${RED}•${NC} All S3 buckets and their contents"
-    echo -e "  ${RED}•${NC} Lambda functions"
-    echo -e "  ${RED}•${NC} API Gateway"
-    echo -e "  ${RED}•${NC} CloudFront distribution"
-    echo -e "  ${RED}•${NC} IAM roles and policies"
     echo -e "  ${RED}•${NC} All form responses and uploaded files"
+    echo -e "  ${RED}•${NC} Lambda functions and API Gateway"
+    echo -e "  ${RED}•${NC} CloudFront distributions"
+    echo -e "  ${RED}•${NC} IAM roles and policies"
     echo ""
     
     # Show estimated data loss
     if [ ! -z "$RESPONSES_BUCKET" ] && [ "$RESPONSES_BUCKET" != "None" ]; then
-        log_info "Checking data that will be lost..."
+        log_info "Checking for form response data..."
         local response_count=$(aws s3api list-objects-v2 --bucket $RESPONSES_BUCKET --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
         if [ "$response_count" -gt 0 ]; then
-            echo -e "  ${YELLOW}⚠️  $response_count response files will be permanently deleted${NC}"
+            echo -e "  ${YELLOW}⚠️  $response_count form response files will be permanently deleted${NC}"
         fi
     fi
     
-    echo -e "\n${BOLD}Environment:${NC} ${RED}$ENVIRONMENT${NC}"
-    echo -e "${BOLD}Region:${NC} ${RED}$REGION${NC}"
-    echo -e "${BOLD}Account:${NC} ${RED}$(aws sts get-caller-identity --query Account --output text 2>/dev/null)${NC}"
+    echo -e "\n${BOLD}Target Environment:${NC}"
+    echo -e "  Environment: ${RED}$ENVIRONMENT${NC}"
+    echo -e "  Region: ${RED}$REGION${NC}"
+    echo -e "  Account: ${RED}$(aws sts get-caller-identity --query Account --output text 2>/dev/null)${NC}"
     echo ""
     
     echo -e "${BOLD}${RED}This action CANNOT be undone!${NC}"
@@ -229,235 +493,108 @@ confirm_destruction() {
     log_success "Destruction confirmed and starting"
 }
 
-# Enhanced stack discovery and analysis
-discover_resources() {
-    log_step "Discovering AWS Resources"
+#####################################
+# S3 Cleanup Functions
+#####################################
+cleanup_s3_buckets() {
+    log_step "🪣 Cleaning Up S3 Buckets"
     
-    # Check if stack exists
-    log_info "Checking for CloudFormation stack..."
-    if ! aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
-        log_warning "Stack $STACK_NAME does not exist in region $REGION"
-        
-        # Look for orphaned resources
-        log_info "Checking for orphaned resources..."
-        check_orphaned_resources
-        
-        if [ ${#WARNINGS[@]} -eq 0 ]; then
-            log_success "No resources found to destroy"
-            exit 0
-        else
-            echo -e "\n${YELLOW}Found some potentially orphaned resources. Continue anyway? (y/N)${NC}"
-            read -p "> " continue_anyway
-            if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-                exit 0
-            fi
-        fi
-        return 1
-    fi
+    local buckets_to_clean=()
     
-    # Get stack information
-    local stack_info=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION --output json)
-    local stack_status=$(echo $stack_info | grep -o '"StackStatus":"[^"]*"' | cut -d'"' -f4)
-    local creation_time=$(echo $stack_info | grep -o '"CreationTime":"[^"]*"' | cut -d'"' -f4)
-    local last_updated=$(echo $stack_info | grep -o '"LastUpdatedTime":"[^"]*"' | cut -d'"' -f4 || echo "Never")
-    
-    log_success "Found CloudFormation stack"
-    log_info "Stack Status: $stack_status"
-    log_info "Created: $creation_time"
-    log_info "Last Updated: $last_updated"
-    
-    # Get stack outputs if available
-    CONFIG_BUCKET=$(aws cloudformation describe-stacks \
-        --stack-name $STACK_NAME \
-        --region $REGION \
-        --query "Stacks[0].Outputs[?OutputKey=='ConfigBucketName'].OutputValue" \
-        --output text 2>/dev/null || echo "")
-    
-    WEBSITE_BUCKET=$(aws cloudformation describe-stacks \
-        --stack-name $STACK_NAME \
-        --region $REGION \
-        --query "Stacks[0].Outputs[?OutputKey=='WebsiteBucketName'].OutputValue" \
-        --output text 2>/dev/null || echo "")
-    
-    RESPONSES_BUCKET=$(aws cloudformation describe-stacks \
-        --stack-name $STACK_NAME \
-        --region $REGION \
-        --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" \
-        --output text 2>/dev/null || echo "")
-    
-    log_debug "Config Bucket: $CONFIG_BUCKET"
-    log_debug "Website Bucket: $WEBSITE_BUCKET"
-    log_debug "Responses Bucket: $RESPONSES_BUCKET"
-    
-    if [ -z "$CONFIG_BUCKET" ] || [ "$CONFIG_BUCKET" = "None" ]; then
-        log_warning "No stack outputs found - stack may be in failed state"
-        # Try to discover buckets by naming convention
-        log_info "Attempting to discover buckets by naming convention..."
-        discover_buckets_by_name
-    fi
-    
-    return 0
-}
-
-# Enhanced function to check for orphaned resources
-check_orphaned_resources() {
-    log_info "Scanning for orphaned DMGT resources..."
-    
-    # Check for S3 buckets
-    local buckets=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'dmgt-basic-form')].Name" --output text --region $REGION 2>/dev/null || echo "")
-    if [ ! -z "$buckets" ]; then
-        log_warning "Found potential orphaned S3 buckets: $buckets"
-        # Store for cleanup
-        ORPHANED_BUCKETS=($buckets)
-    fi
-    
-    # Check for Lambda functions
-    local functions=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'dmgt-basic-form')].FunctionName" --output text --region $REGION 2>/dev/null || echo "")
-    if [ ! -z "$functions" ]; then
-        log_warning "Found potential orphaned Lambda functions: $functions"
-        ORPHANED_FUNCTIONS=($functions)
-    fi
-    
-    # Check for API Gateways
-    local apis=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].{name:name,id:id}" --output text --region $REGION 2>/dev/null || echo "")
-    if [ ! -z "$apis" ]; then
-        log_warning "Found potential orphaned API Gateways: $apis"
-        ORPHANED_APIS=($apis)
-    fi
-    
-    # Check for CloudFront distributions
-    local distributions=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Comment, 'dmgt-basic-form')].{Id:Id,DomainName:DomainName,Comment:Comment}" --output text 2>/dev/null || echo "")
-    if [ ! -z "$distributions" ]; then
-        log_warning "Found potential orphaned CloudFront distributions:"
-        echo "$distributions" | while read -r id domain comment; do
-            if [ ! -z "$id" ]; then
-                log_warning "  Distribution ID: $id, Domain: $domain"
-                ORPHANED_DISTRIBUTIONS+=("$id")
-            fi
-        done
-    fi
-    
-    # Check for IAM roles
-    local roles=$(aws iam list-roles --query "Roles[?contains(RoleName, 'dmgt-basic-form')].RoleName" --output text --region $REGION 2>/dev/null || echo "")
-    if [ ! -z "$roles" ]; then
-        log_warning "Found potential orphaned IAM roles: $roles"
-        ORPHANED_ROLES=($roles)
-    fi
-}
-
-# Function to discover buckets by naming convention
-discover_buckets_by_name() {
-    local account_id=$(aws sts get-caller-identity --query Account --output text)
-    
-    CONFIG_BUCKET="dmgt-basic-form-config-${ENVIRONMENT}-${account_id}"
-    WEBSITE_BUCKET="dmgt-basic-form-website-${ENVIRONMENT}-${account_id}"
-    RESPONSES_BUCKET="dmgt-basic-form-responses-${ENVIRONMENT}-${account_id}"
-    
-    log_debug "Predicted Config Bucket: $CONFIG_BUCKET"
-    log_debug "Predicted Website Bucket: $WEBSITE_BUCKET"
-    log_debug "Predicted Responses Bucket: $RESPONSES_BUCKET"
-}
-
-# Enhanced S3 bucket cleanup with orphaned resource handling
-empty_s3_buckets() {
-    log_step "Emptying S3 Buckets"
-    
-    local buckets_to_empty=()
-    
-    # Collect existing buckets from stack
+    # Add stack buckets
     for bucket in "$CONFIG_BUCKET" "$WEBSITE_BUCKET" "$RESPONSES_BUCKET"; do
         if [ ! -z "$bucket" ] && [ "$bucket" != "None" ]; then
-            # Check if bucket exists
-            if aws s3api head-bucket --bucket "$bucket" --region $REGION > /dev/null 2>&1; then
-                buckets_to_empty+=("$bucket")
-                log_info "Bucket exists: $bucket"
-            else
-                log_debug "Bucket does not exist: $bucket"
-            fi
+            buckets_to_clean+=("$bucket")
         fi
     done
     
-    # Add orphaned buckets if any
-    if [ ! -z "$ORPHANED_BUCKETS" ]; then
-        for bucket in "${ORPHANED_BUCKETS[@]}"; do
-            if [ ! -z "$bucket" ]; then
-                buckets_to_empty+=("$bucket")
-                log_info "Adding orphaned bucket: $bucket"
-            fi
-        done
-    fi
+    # Add orphaned buckets
+    for resource in "${ORPHANED_RESOURCES[@]}"; do
+        if [[ $resource == S3_BUCKET:* ]]; then
+            local bucket="${resource#S3_BUCKET:}"
+            buckets_to_clean+=("$bucket")
+        fi
+    done
     
-    if [ ${#buckets_to_empty[@]} -eq 0 ]; then
-        log_success "No S3 buckets found to empty"
+    if [ ${#buckets_to_clean[@]} -eq 0 ]; then
+        log_success "No S3 buckets found to clean up"
         return 0
     fi
     
-    log_info "Found ${#buckets_to_empty[@]} bucket(s) to empty"
+    log_info "Found ${#buckets_to_clean[@]} S3 bucket(s) to clean up"
     
-    for bucket in "${buckets_to_empty[@]}"; do
-        log_info "Emptying bucket: $bucket"
-        
-        # Get object count for progress tracking
-        local object_count=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
-        log_info "Bucket contains $object_count objects"
-        
-        if [ "$object_count" -gt 0 ]; then
-            # Regular objects
-            log_info "Deleting current objects..."
-            execute_command "aws s3 rm s3://$bucket --recursive --region $REGION" "Delete objects from $bucket" "true"
-            
-            # Handle versioned objects
-            log_info "Checking for versioned objects..."
-            local versions_exist=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'Versions[0].Key' --output text 2>/dev/null || echo "None")
-            
-            if [ "$versions_exist" != "None" ]; then
-                log_info "Deleting object versions..."
-                aws s3api list-object-versions --bucket "$bucket" --region $REGION \
-                    --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | \
-                    while read key version; do
-                        if [ ! -z "$key" ] && [ ! -z "$version" ]; then
-                            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
-                        fi
-                    done
-            fi
-            
-            # Handle delete markers
-            log_info "Checking for delete markers..."
-            local markers_exist=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'DeleteMarkers[0].Key' --output text 2>/dev/null || echo "None")
-            
-            if [ "$markers_exist" != "None" ]; then
-                log_info "Deleting delete markers..."
-                aws s3api list-object-versions --bucket "$bucket" --region $REGION \
-                    --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | \
-                    while read key version; do
-                        if [ ! -z "$key" ] && [ ! -z "$version" ]; then
-                            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
-                        fi
-                    done
-            fi
-            
-            # Verify bucket is empty
-            local remaining_objects=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
-            if [ "$remaining_objects" -eq 0 ]; then
-                log_success "Bucket $bucket is now empty"
-            else
-                log_warning "Bucket $bucket still contains $remaining_objects objects"
-            fi
-        else
-            log_success "Bucket $bucket is already empty"
-        fi
+    for bucket in "${buckets_to_clean[@]}"; do
+        cleanup_single_bucket "$bucket"
     done
     
     log_success "S3 bucket cleanup completed"
 }
 
-# Enhanced CloudFormation stack deletion
-delete_stack() {
-    log_step "Deleting CloudFormation Stack"
+cleanup_single_bucket() {
+    local bucket="$1"
+    
+    log_info "Cleaning up bucket: $bucket"
+    
+    # Check if bucket exists
+    if ! aws s3api head-bucket --bucket "$bucket" --region $REGION > /dev/null 2>&1; then
+        log_debug "Bucket $bucket does not exist - skipping"
+        return 0
+    fi
+    
+    # Get object count
+    local object_count=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
+    log_info "Bucket $bucket contains $object_count objects"
+    
+    if [ "$object_count" -gt 0 ]; then
+        # Delete current objects
+        log_info "Deleting current objects from $bucket..."
+        execute_command "aws s3 rm s3://$bucket --recursive --region $REGION" "Delete objects from $bucket" "true"
+        
+        # Handle versioned objects
+        log_info "Checking for versioned objects in $bucket..."
+        local versions=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null || echo "")
+        
+        if [ ! -z "$versions" ]; then
+            log_info "Deleting versioned objects from $bucket..."
+            echo "$versions" | while read -r key version; do
+                if [ ! -z "$key" ] && [ ! -z "$version" ]; then
+                    aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
+                fi
+            done
+        fi
+        
+        # Handle delete markers
+        log_info "Checking for delete markers in $bucket..."
+        local markers=$(aws s3api list-object-versions --bucket "$bucket" --region $REGION --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null || echo "")
+        
+        if [ ! -z "$markers" ]; then
+            log_info "Deleting delete markers from $bucket..."
+            echo "$markers" | while read -r key version; do
+                if [ ! -z "$key" ] && [ ! -z "$version" ]; then
+                    aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" --region $REGION > /dev/null 2>&1 || true
+                fi
+            done
+        fi
+    fi
+    
+    # Verify bucket is empty
+    local remaining_objects=$(aws s3api list-objects-v2 --bucket "$bucket" --region $REGION --query 'KeyCount' --output text 2>/dev/null || echo "0")
+    if [ "$remaining_objects" -eq 0 ]; then
+        log_success "Bucket $bucket is now empty"
+    else
+        log_warning "Bucket $bucket still contains $remaining_objects objects"
+    fi
+}
+
+#####################################
+# Stack Destruction
+#####################################
+destroy_cloudformation_stack() {
+    log_step "🗂️ Destroying CloudFormation Stack"
     
     # Check if stack exists
     if ! aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION > /dev/null 2>&1; then
-        log_warning "Stack $STACK_NAME does not exist - skipping deletion"
+        log_warning "CloudFormation stack $STACK_NAME does not exist - skipping"
         return 0
     fi
     
@@ -479,7 +616,7 @@ delete_stack() {
             ;;
     esac
     
-    # Wait for stack deletion with enhanced progress tracking
+    # Wait for stack deletion
     log_info "Waiting for stack deletion to complete..."
     local wait_start=$(date +%s)
     local last_status=""
@@ -490,8 +627,8 @@ delete_stack() {
         local wait_duration=$((wait_current - wait_start))
         
         if [ "$current_status" != "$last_status" ]; then
-            echo "" # New line for status change
-            log_info "Stack status changed to: $current_status"
+            echo ""
+            log_info "Stack status: $current_status"
             last_status="$current_status"
         fi
         
@@ -510,7 +647,7 @@ delete_stack() {
                 aws cloudformation describe-stack-events --stack-name $STACK_NAME --region $REGION \
                     --query 'StackEvents[?ResourceStatus==`DELETE_FAILED`].{Time:Timestamp,Resource:LogicalResourceId,Reason:ResourceStatusReason}' \
                     --output table 2>/dev/null || true
-                exit 1
+                return 1
                 ;;
         esac
         
@@ -518,20 +655,77 @@ delete_stack() {
         if [ $wait_duration -gt 1800 ]; then
             echo ""
             log_error "Stack deletion timed out after 30 minutes"
-            exit 1
+            return 1
         fi
         
         sleep 10
     done
     
-    local deletion_end_time=$(date +%s)
-    local deletion_duration=$((deletion_end_time - wait_start))
-    log_success "Stack deletion completed in ${deletion_duration}s"
+    log_success "CloudFormation stack destruction completed"
 }
 
-# Enhanced verification and cleanup with orphaned resource handling
+#####################################
+# Orphaned Resource Cleanup
+#####################################
+cleanup_orphaned_resources() {
+    log_step "🧹 Cleaning Up Orphaned Resources"
+    
+    if [ ${#ORPHANED_RESOURCES[@]} -eq 0 ]; then
+        log_success "No orphaned resources to clean up"
+        return 0
+    fi
+    
+    log_info "Cleaning up ${#ORPHANED_RESOURCES[@]} orphaned resources..."
+    
+    for resource in "${ORPHANED_RESOURCES[@]}"; do
+        local type="${resource%%:*}"
+        local details="${resource#*:}"
+        
+        case $type in
+            "LAMBDA")
+                log_info "Deleting orphaned Lambda function: $details"
+                execute_command "aws lambda delete-function --function-name $details --region $REGION" "Delete Lambda $details" "true"
+                ;;
+            "API_GATEWAY")
+                local id="${details%%:*}"
+                local name="${details#*:}"
+                log_info "Deleting orphaned API Gateway: $name ($id)"
+                execute_command "aws apigateway delete-rest-api --rest-api-id $id --region $REGION" "Delete API Gateway $id" "true"
+                ;;
+            "CLOUDFRONT")
+                local parts=(${details//:/ })
+                local id="${parts[0]}"
+                local domain="${parts[1]}"
+                local status="${parts[2]}"
+                log_warning "CloudFront distribution $domain ($id) requires manual cleanup"
+                log_info "Status: $status - CloudFront distributions must be disabled before deletion"
+                log_info "Manual steps:"
+                log_info "  1. aws cloudfront get-distribution-config --id $id"
+                log_info "  2. Modify config to set Enabled=false"
+                log_info "  3. aws cloudfront update-distribution --id $id --distribution-config <config>"
+                log_info "  4. Wait for status to become 'Deployed'"
+                log_info "  5. aws cloudfront delete-distribution --id $id --if-match <etag>"
+                ;;
+            "IAM_ROLE")
+                log_info "Deleting orphaned IAM role: $details"
+                # Detach managed policies
+                execute_command "aws iam list-attached-role-policies --role-name $details --query 'AttachedPolicies[].PolicyArn' --output text | xargs -r -n1 aws iam detach-role-policy --role-name $details --policy-arn" "Detach policies from $details" "true"
+                # Delete inline policies
+                execute_command "aws iam list-role-policies --role-name $details --query 'PolicyNames[]' --output text | xargs -r -n1 aws iam delete-role-policy --role-name $details --policy-name" "Delete inline policies from $details" "true"
+                # Delete role
+                execute_command "aws iam delete-role --role-name $details" "Delete IAM role $details" "true"
+                ;;
+        esac
+    done
+    
+    log_success "Orphaned resource cleanup completed"
+}
+
+#####################################
+# Final Verification
+#####################################
 verify_destruction() {
-    log_step "Verifying Complete Destruction"
+    log_step "✅ Verifying Complete Destruction"
     
     local verification_errors=0
     
@@ -544,128 +738,51 @@ verify_destruction() {
         log_success "CloudFormation stack successfully deleted"
     fi
     
-    # Check S3 buckets (including orphaned ones)
-    log_info "Verifying S3 bucket deletion..."
-    local all_buckets=("$CONFIG_BUCKET" "$WEBSITE_BUCKET" "$RESPONSES_BUCKET")
-    if [ ! -z "$ORPHANED_BUCKETS" ]; then
-        all_buckets+=("${ORPHANED_BUCKETS[@]}")
-    fi
-    
-    for bucket in "${all_buckets[@]}"; do
-        if [ ! -z "$bucket" ] && [ "$bucket" != "None" ]; then
-            if aws s3api head-bucket --bucket "$bucket" --region $REGION > /dev/null 2>&1; then
-                log_warning "S3 bucket still exists: $bucket"
-                
-                # Attempt to force delete
-                log_info "Attempting to force delete bucket: $bucket"
-                execute_command "aws s3 rb s3://$bucket --force --region $REGION" "Force delete bucket $bucket" "true"
-                
-                # Re-check
-                if aws s3api head-bucket --bucket "$bucket" --region $REGION > /dev/null 2>&1; then
-                    log_error "Failed to delete S3 bucket: $bucket"
-                    verification_errors=$((verification_errors + 1))
-                else
-                    log_success "Successfully force-deleted bucket: $bucket"
-                fi
-            else
-                log_debug "S3 bucket successfully deleted: $bucket"
-            fi
-        fi
-    done
-    
-    # Check and clean up orphaned Lambda functions
-    if [ ! -z "$ORPHANED_FUNCTIONS" ]; then
-        log_info "Cleaning up orphaned Lambda functions..."
-        for func in "${ORPHANED_FUNCTIONS[@]}"; do
-            if [ ! -z "$func" ]; then
-                log_info "Deleting orphaned Lambda function: $func"
-                execute_command "aws lambda delete-function --function-name $func --region $REGION" "Delete orphaned Lambda $func" "true"
-            fi
-        done
-    fi
-    
-    # Check and clean up orphaned API Gateways
-    if [ ! -z "$ORPHANED_APIS" ]; then
-        log_info "Cleaning up orphaned API Gateways..."
-        local api_ids=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].id" --output text --region $REGION 2>/dev/null || echo "")
-        if [ ! -z "$api_ids" ]; then
-            for api_id in $api_ids; do
-                if [ ! -z "$api_id" ]; then
-                    log_info "Deleting orphaned API Gateway: $api_id"
-                    execute_command "aws apigateway delete-rest-api --rest-api-id $api_id --region $REGION" "Delete orphaned API Gateway $api_id" "true"
-                fi
-            done
-        fi
-    fi
-    
-    # Check and clean up orphaned CloudFront distributions
-    local remaining_distributions=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Comment, 'dmgt-basic-form')].{Id:Id,Status:Status}" --output text 2>/dev/null || echo "")
-    if [ ! -z "$remaining_distributions" ]; then
-        log_warning "Found remaining CloudFront distributions:"
-        echo "$remaining_distributions" | while read -r id status; do
-            if [ ! -z "$id" ] && [ "$id" != "None" ]; then
-                log_warning "CloudFront Distribution $id (Status: $status) - requires manual deletion"
-                log_info "To delete: First disable, then delete when status is 'Deployed'"
-                log_info "aws cloudfront get-distribution-config --id $id"
-                log_info "aws cloudfront update-distribution --id $id --distribution-config <config-with-enabled-false>"
-                log_info "aws cloudfront delete-distribution --id $id --if-match <etag>"
-                verification_errors=$((verification_errors + 1))
-            fi
-        done
-    fi
-    
-    # Check and clean up orphaned IAM roles
-    if [ ! -z "$ORPHANED_ROLES" ]; then
-        log_info "Cleaning up orphaned IAM roles..."
-        for role in "${ORPHANED_ROLES[@]}"; do
-            if [ ! -z "$role" ]; then
-                log_info "Deleting orphaned IAM role: $role"
-                # First detach policies
-                execute_command "aws iam list-attached-role-policies --role-name $role --region $REGION --query 'AttachedPolicies[].PolicyArn' --output text | xargs -r -n1 aws iam detach-role-policy --role-name $role --policy-arn" "Detach policies from $role" "true"
-                # Delete inline policies
-                execute_command "aws iam list-role-policies --role-name $role --region $REGION --query 'PolicyNames[]' --output text | xargs -r -n1 aws iam delete-role-policy --role-name $role --policy-name" "Delete inline policies from $role" "true"
-                # Delete role
-                execute_command "aws iam delete-role --role-name $role --region $REGION" "Delete orphaned IAM role $role" "true"
-            fi
-        done
-    fi
-    
-    # Final scan for any remaining resources
+    # Final scan for remaining resources
     log_info "Final scan for remaining DMGT resources..."
     
-    # Lambda functions
+    # Check S3 buckets
+    local remaining_buckets=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'dmgt-basic-form')].Name" --output text 2>/dev/null || echo "")
+    if [ ! -z "$remaining_buckets" ]; then
+        log_warning "Remaining S3 buckets found: $remaining_buckets"
+        verification_errors=$((verification_errors + 1))
+    fi
+    
+    # Check Lambda functions
     local remaining_functions=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'dmgt-basic-form')].FunctionName" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$remaining_functions" ]; then
-        log_warning "Orphaned Lambda functions found: $remaining_functions"
+        log_warning "Remaining Lambda functions found: $remaining_functions"
         verification_errors=$((verification_errors + 1))
     fi
     
-    # API Gateways
+    # Check API Gateways
     local remaining_apis=$(aws apigateway get-rest-apis --query "items[?contains(name, 'dmgt-basic-form')].name" --output text --region $REGION 2>/dev/null || echo "")
     if [ ! -z "$remaining_apis" ]; then
-        log_warning "Orphaned API Gateways found: $remaining_apis"
+        log_warning "Remaining API Gateways found: $remaining_apis"
         verification_errors=$((verification_errors + 1))
     fi
     
-    # IAM roles
-    local remaining_roles=$(aws iam list-roles --query "Roles[?contains(RoleName, 'dmgt-basic-form')].RoleName" --output text --region $REGION 2>/dev/null || echo "")
+    # Check IAM roles
+    local remaining_roles=$(aws iam list-roles --query "Roles[?contains(RoleName, 'dmgt-basic-form')].RoleName" --output text 2>/dev/null || echo "")
     if [ ! -z "$remaining_roles" ]; then
-        log_warning "Orphaned IAM roles found: $remaining_roles"
+        log_warning "Remaining IAM roles found: $remaining_roles"
         verification_errors=$((verification_errors + 1))
     fi
     
     if [ $verification_errors -eq 0 ]; then
-        log_success "All resources successfully destroyed"
+        log_success "✅ All resources successfully destroyed"
         return 0
     else
-        log_warning "Destruction completed with $verification_errors remaining resources"
+        log_warning "⚠️ Destruction completed with $verification_errors remaining resources"
         return 1
     fi
 }
 
-# Destruction summary
+#####################################
+# Summary Functions
+#####################################
 destruction_summary() {
-    log_step "Destruction Summary"
+    log_step "📋 Destruction Summary"
     
     local end_time=$(date +%s)
     local total_duration=$((end_time - START_TIME))
@@ -680,20 +797,19 @@ destruction_summary() {
     
     echo -e "${BOLD}📋 Destruction Summary:${NC}"
     echo -e "Environment: ${CYAN}$ENVIRONMENT${NC}"
-    echo -e "Stack Name: ${CYAN}$STACK_NAME${NC}"
     echo -e "Region: ${CYAN}$REGION${NC}"
+    echo -e "Owner: ${CYAN}$OWNER_NAME${NC}"
     echo -e "Duration: ${CYAN}${minutes}m ${seconds}s${NC}"
+    echo -e "Stack: ${CYAN}$STACK_NAME${NC}"
     echo ""
     
     echo -e "${BOLD}🗑️  Resources Destroyed:${NC}"
     echo -e "• CloudFormation Stack: ${GREEN}✓${NC}"
-    echo -e "• S3 Configuration Bucket: ${GREEN}✓${NC}"
-    echo -e "• S3 Website Bucket: ${GREEN}✓${NC}"
-    echo -e "• S3 Responses Bucket: ${GREEN}✓${NC}"
+    echo -e "• S3 Buckets: ${GREEN}✓${NC}"
     echo -e "• Lambda Functions: ${GREEN}✓${NC}"
     echo -e "• API Gateway: ${GREEN}✓${NC}"
-    echo -e "• CloudFront Distribution: ${GREEN}✓${NC}"
     echo -e "• IAM Roles: ${GREEN}✓${NC}"
+    echo -e "• CloudFront Distribution: ${GREEN}✓${NC}"
     echo ""
     
     if [ ${#WARNINGS[@]} -gt 0 ]; then
@@ -715,12 +831,14 @@ destruction_summary() {
         echo ""
     fi
     
-    echo -e "${BOLD}✅ All tagged resources with Project=dmgt-basic-form have been removed${NC}"
-    echo -e "${BOLD}💡 You can re-deploy anytime using: ${CYAN}./deploy.sh${NC}"
+    echo -e "${BOLD}✅ DMGT Basic Form environment cleaned up${NC}"
+    echo -e "${BOLD}💡 You can redeploy anytime using: ${CYAN}./deploy.sh${NC}"
     echo ""
 }
 
-# Error handler
+#####################################
+# Error Handling
+#####################################
 handle_error() {
     local exit_code=$?
     local line_number=$1
@@ -740,103 +858,70 @@ handle_error() {
     echo -e "1. Check AWS credentials: ${CYAN}aws sts get-caller-identity${NC}"
     echo -e "2. Check stack status: ${CYAN}aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION${NC}"
     echo -e "3. Manual cleanup via AWS Console may be required"
-    echo -e "4. Run with verbose mode: ${CYAN}VERBOSE=true ./destroy.sh${NC}"
-    echo -e "5. Force mode (skip confirmations): ${CYAN}FORCE=true ./destroy.sh${NC}"
+    echo -e "4. Run with verbose mode: ${CYAN}$0 --verbose${NC}"
+    echo -e "5. Force mode (skip confirmations): ${CYAN}$0 --force${NC}"
+    echo -e "6. Check logs: ${CYAN}cat /tmp/dmgt_destroy_output.log${NC}"
     echo ""
     
     exit $exit_code
 }
 
-# Usage function
-show_usage() {
-    echo -e "${BOLD}DMGT Basic Form Destruction Script v$SCRIPT_VERSION${NC}"
-    echo ""
-    echo -e "${BOLD}Usage:${NC}"
-    echo -e "  ./destroy.sh [OPTIONS]"
-    echo ""
-    echo -e "${BOLD}Environment Variables:${NC}"
-    echo -e "  ENVIRONMENT    Deployment environment (default: prod)"
-    echo -e "  AWS_REGION     AWS region (default: us-east-1)"
-    echo -e "  VERBOSE        Enable verbose logging (default: false)"
-    echo -e "  DRY_RUN        Show commands without executing (default: false)"
-    echo -e "  FORCE          Skip confirmation prompts (default: false)"
-    echo ""
-    echo -e "${BOLD}Examples:${NC}"
-    echo -e "  ${CYAN}./destroy.sh${NC}                     # Standard destruction"
-    echo -e "  ${CYAN}VERBOSE=true ./destroy.sh${NC}        # Verbose logging"
-    echo -e "  ${CYAN}DRY_RUN=true ./destroy.sh${NC}        # Preview commands"
-    echo -e "  ${CYAN}FORCE=true ./destroy.sh${NC}          # Skip confirmations"
-    echo -e "  ${CYAN}ENVIRONMENT=dev ./destroy.sh${NC}     # Destroy dev environment"
-    echo ""
-    echo -e "${BOLD}${RED}WARNING: This operation is irreversible!${NC}"
-    echo ""
-}
-
-# Main execution function
+#####################################
+# Main Execution
+#####################################
 main() {
     # Set up error handling
     trap 'handle_error $LINENO' ERR
     
-    # Handle command line arguments
-    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-        show_usage
-        exit 0
-    fi
-    
-    # Initialize arrays for orphaned resources
-    ORPHANED_BUCKETS=()
-    ORPHANED_FUNCTIONS=()
-    ORPHANED_APIS=()
-    ORPHANED_DISTRIBUTIONS=()
-    ORPHANED_ROLES=()
+    # Parse command line arguments
+    parse_arguments "$@"
     
     # Script header
     echo -e "${BOLD}${RED}"
-    printf '=%.0s' {1..72}
+    printf '=%.0s' {1..80}
     echo ""
-    echo "  $SCRIPT_NAME v$SCRIPT_VERSION - Enhanced Destruction Script"
-    printf '=%.0s' {1..72}
+    echo "  DMGT Basic Form - Professional Destruction Script"
+    printf '=%.0s' {1..80}
     echo -e "${NC}"
     
-    log_info "Starting destruction of DMGT Basic Form"
+    log_info "Starting DMGT Basic Form destruction"
     log_info "Environment: $ENVIRONMENT"
     log_info "Region: $REGION"
-    log_info "Stack Name: $STACK_NAME"
-    log_info "Verbose Mode: $VERBOSE"
+    log_info "Owner: $OWNER_NAME"
+    log_info "Verbose: $VERBOSE"
     log_info "Dry Run: $DRY_RUN"
-    log_info "Force Mode: $FORCE"
+    log_info "Force: $FORCE"
     
     if [ "$DRY_RUN" = "true" ]; then
         log_warning "DRY RUN MODE - No actual changes will be made"
     fi
     
     # Execute destruction steps
-    check_aws_cli
+    check_prerequisites
     show_progress $STEP_COUNT $TOTAL_STEPS
     
-    if discover_resources; then
-        show_progress $STEP_COUNT $TOTAL_STEPS
-        
-        confirm_destruction
-        show_progress $STEP_COUNT $TOTAL_STEPS
-        
-        empty_s3_buckets
-        show_progress $STEP_COUNT $TOTAL_STEPS
-        
-        delete_stack
-        show_progress $STEP_COUNT $TOTAL_STEPS
-        
-        verify_destruction
-        show_progress $STEP_COUNT $TOTAL_STEPS
-    else
-        # Skip some steps if no stack found
-        STEP_COUNT=$((STEP_COUNT + 4))
-        show_progress $STEP_COUNT $TOTAL_STEPS
-    fi
+    discover_resources
+    show_progress $STEP_COUNT $TOTAL_STEPS
     
-    echo "" # Clear progress line
+    confirm_destruction
+    show_progress $STEP_COUNT $TOTAL_STEPS
+    
+    cleanup_s3_buckets
+    show_progress $STEP_COUNT $TOTAL_STEPS
+    
+    destroy_cloudformation_stack
+    show_progress $STEP_COUNT $TOTAL_STEPS
+    
+    cleanup_orphaned_resources
+    show_progress $STEP_COUNT $TOTAL_STEPS
+    
+    verify_destruction
+    show_progress $STEP_COUNT $TOTAL_STEPS
+    
+    echo ""
     destruction_summary
 }
 
-# Run main function with all arguments
+# Change to script directory and run
+cd "$SCRIPT_DIR"
 main "$@"
