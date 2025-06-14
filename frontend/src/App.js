@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
+import './enhanced-upload.css'; // Import enhanced file upload styles
 import FormRenderer from './components/FormRenderer';
 import TabNavigation from './components/TabNavigation';
 import Logo from './components/Logo';
