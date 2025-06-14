@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { s3UploadService, validateFileType, validateFileSize, formatFileSize } from '../services/s3UploadService';
+import { secureS3UploadService, validateFileType, validateFileSize, formatFileSize } from '../services/secureS3UploadService';
 
 const FormRenderer = ({ 
   questions, 
@@ -63,7 +63,7 @@ const FormRenderer = ({
     onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
-  // ENHANCED: Better file handling with S3 integration
+  // ENHANCED: Better file handling with secure S3 integration
   const handleInputChange = async (questionId, value, file = null) => {
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
@@ -74,7 +74,7 @@ const FormRenderer = ({
     // Clear any previous file upload errors for this question
     setFileUploadErrors(prev => ({ ...prev, [questionId]: null }));
 
-    // ENHANCED: S3 file upload handling
+    // ENHANCED: Secure S3 file upload handling
     if (file) {
       try {
         console.log(`Processing file upload for question ${questionId}:`, file.name);
@@ -91,8 +91,8 @@ const FormRenderer = ({
         // Set uploading state
         setUploadingFiles(prev => ({ ...prev, [questionId]: true }));
 
-        // Upload file to S3
-        const uploadResult = await s3UploadService.uploadFile(
+        // Upload file using secure service
+        const uploadResult = await secureS3UploadService.uploadFile(
           file, 
           companyId, 
           employeeId, 
@@ -111,7 +111,7 @@ const FormRenderer = ({
           size: file.size,
           type: file.type,
           s3Key: uploadResult.s3Key,
-          s3Url: uploadResult.url,
+          downloadUrl: uploadResult.url,
           entryId: uploadResult.entryId,
           uploadedAt: new Date().toISOString()
         };
@@ -127,7 +127,7 @@ const FormRenderer = ({
           fileSize: file.size,
           fileType: file.type,
           s3Key: uploadResult.s3Key,
-          s3Url: uploadResult.url,
+          downloadUrl: uploadResult.url,
           entryId: uploadResult.entryId,
           uploadedAt: new Date().toISOString()
         };
@@ -300,12 +300,12 @@ const FormRenderer = ({
                   )}
                   {fileInfo.fromSavedResponse && (
                     <span className="file-note">
-                      {fileInfo.isS3File ? '(Stored in S3)' : '(Previously uploaded)'}
+                      {fileInfo.isS3File ? '(Stored securely)' : '(Previously uploaded)'}
                     </span>
                   )}
-                  {fileInfo.s3Url && (
+                  {fileInfo.downloadUrl && (
                     <a 
-                      href={fileInfo.s3Url} 
+                      href={fileInfo.downloadUrl} 
                       target="_blank" 
                       rel="noopener noreferrer"
                       className="file-download-link"
