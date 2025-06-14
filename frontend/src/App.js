@@ -102,7 +102,7 @@ function App() {
 
   const loadEmployeeData = async (employeeId) => {
     try {
-      console.log(`Loading employee data for ID: ${employeeId}`);
+      console.log(`Loading employee data for ID: ${employeeId} (type: ${typeof employeeId})`);
       const response = await fetch(`${API_BASE_URL}/responses?action=getEmployee&companyId=${companyId}&employeeId=${employeeId}`);
       if (response.ok) {
         const data = await response.json();
@@ -111,7 +111,11 @@ function App() {
           setCurrentEmployeeId(employeeId);
           console.log(`Employee data loaded for ID: ${employeeId}`, data.responses);
           return data.employeeData;
+        } else {
+          console.log(`No employee data found for ID: ${employeeId}`);
         }
+      } else {
+        console.error(`Failed to load employee data: ${response.status}`);
       }
       return null;
     } catch (error) {
@@ -120,7 +124,7 @@ function App() {
     }
   };
 
-  // FIXED: Enhanced saveResponse function with better company completion logic
+  // CRITICAL FIX: Enhanced saveResponse function with proper company completion logic
   const saveResponse = async (questionId, answer, file = null) => {
     // CRITICAL FIX: Don't allow saving if employee session not properly initialized
     if (activeTab === 'employee' && !sessionInitialized) {
@@ -160,6 +164,12 @@ function App() {
         }
       }
 
+      // CRITICAL FIX: Add file metadata to payload if file is provided
+      if (file) {
+        payload.fileMetadata = file;
+        console.log('Including file metadata in save request:', file);
+      }
+
       const response = await fetch(`${API_BASE_URL}/responses`, {
         method: 'POST',
         headers: {
@@ -171,7 +181,7 @@ function App() {
       if (!response.ok) {
         const errorData = await response.json();
         
-        // FIXED: Better handling of completion status from backend
+        // CRITICAL FIX: Better handling of completion status from backend
         if (errorData.error && errorData.error.includes('already completed')) {
           // Only show alert and block further saves if it's actually completed
           if (activeTab === 'company') {
@@ -187,11 +197,23 @@ function App() {
 
       const responseData = await response.json();
       
-      // FIXED: Only mark as completed when backend explicitly says so
-      // Don't assume completion based on single question save
-      if (responseData.completed && activeTab === 'company') {
-        console.log('Company assessment marked as completed by backend');
-        setCompanyStatus(prev => ({ ...prev, companyCompleted: true }));
+      // CRITICAL FIX: Only mark company as completed when ALL questions are answered
+      // Don't mark as completed based on single question saves
+      if (activeTab === 'company') {
+        // Check if this response completion indicates all questions are answered
+        const totalQuestions = questions.length;
+        const currentAnsweredCount = Object.keys(newResponses).length;
+        
+        console.log(`Company Progress: ${currentAnsweredCount}/${totalQuestions} questions answered`);
+        
+        // Only mark as completed if backend explicitly says so AND we have all questions answered
+        if (responseData.completed && currentAnsweredCount === totalQuestions) {
+          console.log('Company assessment marked as completed - all questions answered');
+          setCompanyStatus(prev => ({ ...prev, companyCompleted: true }));
+        } else if (responseData.completed && currentAnsweredCount < totalQuestions) {
+          console.warn('Backend marked as completed but not all questions answered - ignoring completion flag');
+          // Don't update completion status if we don't have all answers
+        }
       }
 
       // FIXED: Capture employee ID for new employees (first save only)
@@ -200,8 +222,8 @@ function App() {
           currentEmployeeId === null && 
           responseData.employeeId !== undefined) {
         
+        console.log(`New employee ID assigned: ${responseData.employeeId} (type: ${typeof responseData.employeeId})`);
         setCurrentEmployeeId(responseData.employeeId);
-        console.log(`New employee ID assigned: ${responseData.employeeId}`);
         
         // Update company status to reflect new employee
         await checkCompanyStatus();
@@ -224,12 +246,18 @@ function App() {
   };
 
   const handleTabChange = (tabId) => {
-    // FIXED: Only prevent tab change if company is actually completed AND we have all questions answered
+    // CRITICAL FIX: More intelligent tab change blocking for company assessment
     if (tabId === 'company' && companyStatus.companyCompleted) {
-      const allQuestionsAnswered = questions.length > 0 && Object.keys(responses).length === questions.length;
-      if (allQuestionsAnswered) {
+      // Only block if we're sure it's truly completed (have all questions answered)
+      const totalQuestions = questions.length;
+      const answeredQuestions = Object.keys(responses).length;
+      
+      if (totalQuestions > 0 && answeredQuestions === totalQuestions) {
         alert('Company questionnaire has already been completed for this Company ID.');
         return;
+      } else {
+        // If status says completed but we don't have all answers, allow access
+        console.log('Company marked as completed but not all questions answered - allowing access');
       }
     }
     
@@ -271,7 +299,7 @@ function App() {
 
   // FIXED: Enhanced employee session setup with proper state management
   const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
-    console.log(`Setting up employee session: mode=${mode}, employeeId=${employeeId}`);
+    console.log(`Setting up employee session: mode=${mode}, employeeId=${employeeId} (type: ${typeof employeeId})`);
     
     setEmployeeSessionMode(mode);
     setSaveStatus('');
@@ -286,7 +314,7 @@ function App() {
     } else if (mode === 'returning' && employeeId !== null) {
       console.log(`Loading returning employee data for ID: ${employeeId}`);
       const employeeData = await loadEmployeeData(employeeId);
-      if (employeeData) {
+      if (employeeData !== null) {
         setEmployeeSessionReady(true);
         setSessionInitialized(true); // CRITICAL FIX: Mark session as initialized
         console.log(`Returning employee session loaded for ID: ${employeeId}`);
