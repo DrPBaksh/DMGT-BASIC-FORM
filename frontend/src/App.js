@@ -32,10 +32,12 @@ function App() {
   const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
   const [sessionInitialized, setSessionInitialized] = useState(false);
 
-  // CRITICAL FIX: Company modification tracking
+  // CRITICAL FIX: Company modification tracking with better completion logic
   const [companyCanModify, setCompanyCanModify] = useState(true);
   const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed', 'read_only'
   const [isInitialLoad, setIsInitialLoad] = useState(true); // Track if this is the first load
+  const [lastSaveTimestamp, setLastSaveTimestamp] = useState(0); // Prevent duplicate saves
+  const [isSaving, setIsSaving] = useState(false); // Track active save operations
 
   const tabs = [
     { id: 'company', label: 'Company Assessment', icon: '🏢' },
@@ -138,17 +140,17 @@ function App() {
           completionPercentage: status.completionPercentage || 0
         });
 
-        // CRITICAL FIX: Proper form state determination
+        // CRITICAL FIX: Improved form state determination
         const hasAnyResponses = status.completionPercentage > 0;
-        const isFullyComplete = status.completionPercentage === 100 && status.companyCompleted;
+        const isExplicitlyComplete = status.explicitlyCompleted === true; // Only true if backend marks it as explicitly complete
         
-        if (isFullyComplete) {
-          // Only mark as completed if it's actually 100% complete
+        if (isExplicitlyComplete) {
+          // Only mark as completed if backend explicitly says so
           setCompanyFormState('completed');
           setCompanyCanModify(true); // Still allow modifications with warning
-          console.log('Company form is completed but can be modified');
+          console.log('Company form is explicitly completed by backend');
         } else if (hasAnyResponses) {
-          // Has some responses but not complete
+          // Has some responses but not explicitly complete
           setCompanyFormState('in_progress');
           setCompanyCanModify(true);
           console.log('Company form is in progress and editable');
@@ -218,11 +220,22 @@ function App() {
     }
   };
 
-  // CRITICAL FIX: Enhanced saveResponse function with proper completion logic
+  // CRITICAL FIX: Enhanced saveResponse function with proper completion logic and duplicate prevention
   const saveResponse = async (questionId, answer, file = null) => {
+    // CRITICAL FIX: Prevent duplicate saves and race conditions
+    const now = Date.now();
+    if (isSaving || (now - lastSaveTimestamp < 500)) {
+      console.log('Save operation blocked: too frequent or already saving');
+      return;
+    }
+    
+    setIsSaving(true);
+    setLastSaveTimestamp(now);
+
     // CRITICAL FIX: Don't allow saving if employee session not properly initialized
     if (activeTab === 'employee' && !sessionInitialized) {
       console.warn('Attempted to save response before employee session was initialized');
+      setIsSaving(false);
       return;
     }
 
@@ -232,6 +245,7 @@ function App() {
         'This company assessment has been completed. Are you sure you want to modify it? This will update the last modified date.'
       );
       if (!confirmModify) {
+        setIsSaving(false);
         return;
       }
     }
@@ -246,9 +260,10 @@ function App() {
         formType: activeTab,
         responses: newResponses,
         lastModified: new Date().toISOString(),
-        // CRITICAL FIX: Don't send completion signals on single question saves
-        preventAutoComplete: true, // New flag to prevent premature completion
-        singleQuestionUpdate: true // Flag to indicate this is just a single question update
+        // CRITICAL FIX: Never auto-complete on single question saves
+        singleQuestionUpdate: true, // Always flag as single question update
+        preventAutoComplete: true, // Always prevent auto-completion
+        explicitSubmit: false // Only true when user explicitly submits entire form
       };
 
       // ENHANCED: Include file metadata if present
@@ -276,24 +291,21 @@ function App() {
           throw new Error('Employee session not properly initialized');
         }
       } else {
-        // CRITICAL FIX: Company form handling with proper completion logic
+        // CRITICAL FIX: Company form handling with improved completion logic
         payload.allowModification = companyCanModify;
         payload.formState = companyFormState;
         
-        // CRITICAL FIX: Only check for completion if explicitly requested
+        // CRITICAL FIX: Only check for potential completion if explicitly requested
         const totalQuestions = questions.length;
         const answeredQuestions = Object.keys(newResponses).filter(key => 
           newResponses[key] && newResponses[key].trim() !== ''
         ).length;
         
-        // Only consider it complete if ALL questions are answered AND user explicitly submits
-        if (totalQuestions > 0 && answeredQuestions === totalQuestions) {
-          payload.potentiallyComplete = true; // Flag for backend to check
-        } else {
-          payload.inProgress = true; // Explicitly mark as in progress
-        }
+        // Mark as in progress but don't auto-complete
+        payload.inProgress = true;
+        payload.completionPercentage = totalQuestions > 0 ? Math.round((answeredQuestions / totalQuestions) * 100) : 0;
         
-        console.log(`Company save: ${answeredQuestions}/${totalQuestions} questions answered`);
+        console.log(`Company save: ${answeredQuestions}/${totalQuestions} questions answered (${payload.completionPercentage}%)`);
       }
 
       const response = await fetch(`${API_BASE_URL}/responses`, {
@@ -313,11 +325,12 @@ function App() {
             alert('Company questionnaire modifications are not allowed at this time. Please contact an administrator.');
             setCompanyCanModify(false);
             setSaveStatus('error');
+            setIsSaving(false);
             return;
           } else if (errorData.error.includes('already completed') && activeTab === 'company') {
             // CRITICAL FIX: Only show this if it's actually completed, not in progress
-            if (errorData.actuallyComplete === true) {
-              alert('Company questionnaire has been fully completed. You can still modify responses, but changes will update the last modified date.');
+            if (errorData.explicitlyComplete === true) {
+              alert('Company questionnaire has been explicitly completed. You can still modify responses, but changes will update the last modified date.');
               setCompanyFormState('completed');
             }
             // Don't block the save - allow modifications
@@ -338,19 +351,19 @@ function App() {
           setCompanyStatus(prev => ({
             ...prev,
             completionPercentage: responseData.completionPercentage,
-            companyInProgress: responseData.completionPercentage > 0 && responseData.completionPercentage < 100,
-            companyCompleted: responseData.completionPercentage === 100,
+            companyInProgress: responseData.completionPercentage > 0 && !responseData.explicitlyComplete,
+            companyCompleted: responseData.explicitlyComplete === true,
             lastModified: new Date().toISOString()
           }));
         }
         
-        // CRITICAL FIX: Only update form state if backend explicitly says it's complete
+        // CRITICAL FIX: Only update form state if backend explicitly indicates completion
         if (responseData.explicitlyComplete === true) {
           setCompanyFormState('completed');
           console.log('Company form marked as explicitly complete by backend');
         } else if (responseData.completionPercentage > 0) {
           setCompanyFormState('in_progress');
-          console.log('Company form is in progress');
+          console.log('Company form remains in progress');
         }
       }
 
@@ -380,6 +393,8 @@ function App() {
       
       // Auto-clear error status
       setTimeout(() => setSaveStatus(''), 5000);
+    } finally {
+      setIsSaving(false);
     }
   };
 
