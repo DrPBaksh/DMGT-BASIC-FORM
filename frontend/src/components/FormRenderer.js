@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { s3UploadService, validateFileType, validateFileSize, formatFileSize } from '../services/s3UploadService';
 
 const FormRenderer = ({ 
   questions, 
@@ -14,6 +15,8 @@ const FormRenderer = ({
   const [uploadedFiles, setUploadedFiles] = useState({});
   const [currentSection, setCurrentSection] = useState(0);
   const [answeredQuestions, setAnsweredQuestions] = useState(new Set());
+  const [uploadingFiles, setUploadingFiles] = useState({});
+  const [fileUploadErrors, setFileUploadErrors] = useState({});
 
   // Group questions by section
   const groupedQuestions = questions.reduce((groups, question) => {
@@ -60,42 +63,91 @@ const FormRenderer = ({
     onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
-  // ENHANCED: Better file handling with employee session awareness and proper upload logic
-  const handleInputChange = (questionId, value, file = null) => {
+  // ENHANCED: Better file handling with S3 integration
+  const handleInputChange = async (questionId, value, file = null) => {
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
       console.warn('Cannot save response: Employee session not initialized');
       return;
     }
 
-    // FIXED: Enhanced file upload handling
+    // Clear any previous file upload errors for this question
+    setFileUploadErrors(prev => ({ ...prev, [questionId]: null }));
+
+    // ENHANCED: S3 file upload handling
     if (file) {
-      console.log(`File uploaded for question ${questionId}:`, file.name, file.size, file.type);
-      
-      // Store file info locally for display
-      setUploadedFiles(prev => ({
-        ...prev,
-        [questionId]: {
+      try {
+        console.log(`Processing file upload for question ${questionId}:`, file.name);
+        
+        // Validate file type and size
+        if (!validateFileType(file)) {
+          throw new Error('File type not allowed. Please upload PDF, DOC, TXT, Image, Excel, or PowerPoint files.');
+        }
+        
+        if (!validateFileSize(file, 10)) {
+          throw new Error('File size must be less than 10MB');
+        }
+
+        // Set uploading state
+        setUploadingFiles(prev => ({ ...prev, [questionId]: true }));
+
+        // Upload file to S3
+        const uploadResult = await s3UploadService.uploadFile(
+          file, 
+          companyId, 
+          employeeId, 
+          questionId,
+          {
+            formType,
+            questionText: questions.find(q => q.QuestionID === questionId)?.Question || 'Unknown Question'
+          }
+        );
+
+        console.log('File uploaded successfully:', uploadResult);
+
+        // Store file info locally for display
+        const fileInfo = {
           name: file.name,
           size: file.size,
           type: file.type,
+          s3Key: uploadResult.s3Key,
+          s3Url: uploadResult.url,
+          entryId: uploadResult.entryId,
           uploadedAt: new Date().toISOString()
-        }
-      }));
+        };
 
-      // Create a payload that includes both the answer and file metadata
-      const fileMetadata = {
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type,
-        uploadedAt: new Date().toISOString()
-      };
+        setUploadedFiles(prev => ({
+          ...prev,
+          [questionId]: fileInfo
+        }));
 
-      // Combine text answer with file metadata
-      const combinedValue = value ? `${value} [FILE: ${file.name}]` : `[FILE: ${file.name}]`;
-      
-      console.log(`Saving response with file metadata:`, { value: combinedValue, file: fileMetadata });
-      onResponseChange(questionId, combinedValue, fileMetadata);
+        // Create response value that includes both text and file metadata
+        const fileMetadata = {
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type,
+          s3Key: uploadResult.s3Key,
+          s3Url: uploadResult.url,
+          entryId: uploadResult.entryId,
+          uploadedAt: new Date().toISOString()
+        };
+
+        // Combine text answer with file metadata
+        const combinedValue = value ? `${value} [FILE_UPLOADED: ${file.name}]` : `[FILE_UPLOADED: ${file.name}]`;
+        
+        console.log(`Saving response with S3 file metadata:`, { value: combinedValue, fileMetadata });
+        onResponseChange(questionId, combinedValue, fileMetadata);
+
+      } catch (error) {
+        console.error('File upload error:', error);
+        setFileUploadErrors(prev => ({ 
+          ...prev, 
+          [questionId]: error.message 
+        }));
+        alert(`File upload failed: ${error.message}`);
+      } finally {
+        setUploadingFiles(prev => ({ ...prev, [questionId]: false }));
+      }
     } else {
       // Regular response without file
       onResponseChange(questionId, value, null);
@@ -118,21 +170,34 @@ const FormRenderer = ({
     return isRequired && !hasResponse;
   };
 
-  // FIXED: Enhanced file retrieval logic for returning users
+  // ENHANCED: File retrieval logic for returning users with S3 support
   const getUploadedFileInfo = (questionId) => {
     // Check if response contains file information
     const response = responses[questionId];
+    if (response && response.includes('[FILE_UPLOADED:')) {
+      const fileMatch = response.match(/\[FILE_UPLOADED: (.+?)\]/);
+      if (fileMatch) {
+        return {
+          name: fileMatch[1],
+          fromSavedResponse: true,
+          isS3File: true
+        };
+      }
+    }
+    
+    // Legacy support for old file format
     if (response && response.includes('[FILE:')) {
       const fileMatch = response.match(/\[FILE: (.+?)\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
-          fromSavedResponse: true
+          fromSavedResponse: true,
+          isS3File: false
         };
       }
     }
     
-    // Check local uploaded files
+    // Check local uploaded files (current session)
     return uploadedFiles[questionId] || null;
   };
 
@@ -142,6 +207,8 @@ const FormRenderer = ({
     const allowFileUpload = question.AllowFileUpload === 'true';
     const isAnswered = answeredQuestions.has(question.QuestionID);
     const isIncomplete = isQuestionIncomplete(question);
+    const isUploading = uploadingFiles[question.QuestionID];
+    const uploadError = fileUploadErrors[question.QuestionID];
     
     // FIXED: Use sequential numbering instead of QuestionOrder
     const displayNumber = questionNumberMapping[question.QuestionID] || questionIndex + 1;
@@ -176,33 +243,52 @@ const FormRenderer = ({
               type="file"
               id={`file-${question.QuestionID}`}
               className="file-input"
-              onChange={(e) => {
+              onChange={async (e) => {
                 const file = e.target.files[0];
                 if (file) {
-                  // FIXED: Better file size validation
-                  const maxSize = 10 * 1024 * 1024; // 10MB
-                  if (file.size > maxSize) {
-                    alert('File size must be less than 10MB');
-                    return;
-                  }
-                  
                   // Get current text value and combine with file
                   const currentValue = responses[question.QuestionID] || '';
-                  const textValue = currentValue.replace(/\s*\[FILE:.*?\]\s*/, '').trim();
-                  handleInputChange(question.QuestionID, textValue, file);
+                  const textValue = currentValue
+                    .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
+                    .replace(/\s*\[FILE:.*?\]\s*/, '')
+                    .trim();
+                  await handleInputChange(question.QuestionID, textValue, file);
                 }
               }}
               accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.xlsx,.xls,.ppt,.pptx"
+              disabled={isUploading}
             />
-            <label htmlFor={`file-${question.QuestionID}`} className="file-upload-button">
-              📎 Upload Supporting Document
+            <label 
+              htmlFor={`file-${question.QuestionID}`} 
+              className={`file-upload-button ${isUploading ? 'uploading' : ''}`}
+            >
+              {isUploading ? (
+                <>
+                  <span className="upload-spinner">⏳</span>
+                  Uploading...
+                </>
+              ) : (
+                <>
+                  📎 Upload Supporting Document
+                </>
+              )}
             </label>
             <div className="file-upload-text">
               Optional: Upload any relevant documents to support your answer (Max 10MB)
+              <br />
+              <small>Supported formats: PDF, DOC, TXT, Images, Excel, PowerPoint</small>
             </div>
             
-            {/* ENHANCED: Better file display for both new uploads and retrieved files */}
-            {fileInfo && (
+            {/* Upload error display */}
+            {uploadError && (
+              <div className="file-upload-error">
+                <span className="error-icon">❌</span>
+                <span className="error-text">{uploadError}</span>
+              </div>
+            )}
+            
+            {/* ENHANCED: Better file display with S3 support */}
+            {fileInfo && !uploadError && (
               <div className="uploaded-file">
                 <div className="file-info">
                   <span className="file-status">
@@ -210,10 +296,22 @@ const FormRenderer = ({
                   </span>
                   <span className="file-name">{fileInfo.name}</span>
                   {fileInfo.size && (
-                    <span className="file-size">({(fileInfo.size / 1024).toFixed(1)} KB)</span>
+                    <span className="file-size">({formatFileSize(fileInfo.size)})</span>
                   )}
                   {fileInfo.fromSavedResponse && (
-                    <span className="file-note">(Previously uploaded)</span>
+                    <span className="file-note">
+                      {fileInfo.isS3File ? '(Stored in S3)' : '(Previously uploaded)'}
+                    </span>
+                  )}
+                  {fileInfo.s3Url && (
+                    <a 
+                      href={fileInfo.s3Url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="file-download-link"
+                    >
+                      📥 Download
+                    </a>
                   )}
                 </div>
               </div>
@@ -236,7 +334,8 @@ const FormRenderer = ({
     const { QuestionType, QuestionTypeDetails } = question;
     
     // FIXED: Clean up value to remove file metadata for display in input fields
-    const cleanValue = value ? value.replace(/\s*\[FILE:.*?\]\s*/, '').trim() : '';
+    const cleanValue = value ? 
+      value.replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '').replace(/\s*\[FILE:.*?\]\s*/, '').trim() : '';
 
     switch (QuestionType) {
       case 'text':
