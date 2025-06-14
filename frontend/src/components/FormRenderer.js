@@ -1,7 +1,19 @@
 import React, { useState, useEffect } from 'react';
 
-const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange, companyId, formType }) => {
+const FormRenderer = ({ 
+  questions, 
+  responses, 
+  onResponseChange, 
+  onQuestionChange, 
+  companyId, 
+  formType,
+  employeeId,
+  employeeMode,
+  sessionInitialized
+}) => {
   const [uploadedFiles, setUploadedFiles] = useState({});
+  const [currentSection, setCurrentSection] = useState(0);
+  const [answeredQuestions, setAnsweredQuestions] = useState(new Set());
 
   // Group questions by section
   const groupedQuestions = questions.reduce((groups, question) => {
@@ -15,15 +27,30 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
 
   // Sort sections and questions within sections
   const sortedSections = Object.keys(groupedQuestions).sort();
-  
+  const sections = sortedSections.map(sectionName => ({
+    name: sectionName,
+    questions: groupedQuestions[sectionName].sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
+  }));
+
+  // Track answered questions
   useEffect(() => {
-    // Notify parent about current question for progress tracking
+    const answered = new Set(Object.keys(responses).filter(key => responses[key] !== ''));
+    setAnsweredQuestions(answered);
+    
+    // Notify parent about current progress
     const totalQuestions = questions.length;
-    const answeredQuestions = Object.keys(responses).length;
-    onQuestionChange(answeredQuestions);
+    const answeredCount = answered.size;
+    onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
+  // ENHANCED: Better file handling with employee session awareness
   const handleInputChange = (questionId, value, file = null) => {
+    // Safety check for employee sessions
+    if (formType === 'employee' && !sessionInitialized) {
+      console.warn('Cannot save response: Employee session not initialized');
+      return;
+    }
+
     onResponseChange(questionId, value, file);
     
     if (file) {
@@ -34,19 +61,44 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
     }
   };
 
-  const renderQuestion = (question, index) => {
+  // Enhanced progress calculation per section
+  const getSectionProgress = (sectionQuestions) => {
+    const totalQuestions = sectionQuestions.length;
+    const answeredInSection = sectionQuestions.filter(q => 
+      answeredQuestions.has(q.QuestionID)
+    ).length;
+    return totalQuestions > 0 ? (answeredInSection / totalQuestions) * 100 : 0;
+  };
+
+  // Check if question is required and not answered
+  const isQuestionIncomplete = (question) => {
+    const isRequired = question.Required === 'true';
+    const hasResponse = responses[question.QuestionID] && responses[question.QuestionID].trim() !== '';
+    return isRequired && !hasResponse;
+  };
+
+  const renderQuestion = (question, questionIndex, sectionIndex) => {
     const value = responses[question.QuestionID] || '';
     const isRequired = question.Required === 'true';
     const allowFileUpload = question.AllowFileUpload === 'true';
+    const isAnswered = answeredQuestions.has(question.QuestionID);
+    const isIncomplete = isQuestionIncomplete(question);
 
     return (
-      <div key={question.QuestionID} className="question-item fade-in">
+      <div 
+        key={question.QuestionID} 
+        className={`question-item fade-in ${isAnswered ? 'answered' : ''} ${isIncomplete ? 'incomplete' : ''}`}
+      >
         <div className="question-header">
           <div className="question-text">
             {question.Question}
             {isRequired && <span className="question-required"> *</span>}
           </div>
-          <div className="question-number">{question.QuestionOrder}</div>
+          <div className="question-badges">
+            <div className="question-number">{question.QuestionOrder}</div>
+            {isAnswered && <div className="answered-badge">✓</div>}
+            {isIncomplete && <div className="required-badge">!</div>}
+          </div>
         </div>
 
         <div className="question-input">
@@ -77,6 +129,14 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
                 ✅ Uploaded: {uploadedFiles[question.QuestionID]}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Enhanced help text for better UX */}
+        {question.HelpText && (
+          <div className="question-help">
+            <span className="help-icon">💡</span>
+            <span className="help-text">{question.HelpText}</span>
           </div>
         )}
       </div>
@@ -147,6 +207,7 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
                   className="choice-input"
                 />
                 <span className="choice-label">{option}</span>
+                <span className="choice-checkmark">✓</span>
               </label>
             ))}
           </div>
@@ -176,8 +237,12 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
                   className="choice-input"
                 />
                 <span className="choice-label">{option}</span>
+                <span className="choice-checkmark">✓</span>
               </label>
             ))}
+            <div className="selected-count">
+              {selectedValues.length} option{selectedValues.length !== 1 ? 's' : ''} selected
+            </div>
           </div>
         );
 
@@ -198,7 +263,7 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
               <span>{max}</span>
             </div>
             <div className="slider-value">
-              Current value: {value || min}
+              Current value: <strong>{value || min}</strong>
             </div>
           </div>
         );
@@ -219,17 +284,17 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
                 </button>
               ))}
             </div>
-            <span className="rating-label">
+            <div className="rating-label">
               {value ? `${value}/${ratingMax}` : 'Not rated'}
-            </span>
+            </div>
           </div>
         );
 
       case 'yes-no':
         return (
-          <div className="choice-options">
+          <div className="choice-options yes-no-options">
             {['Yes', 'No'].map((option) => (
-              <label key={option} className={`choice-option ${value === option ? 'selected' : ''}`}>
+              <label key={option} className={`choice-option choice-yn ${value === option ? 'selected' : ''} ${option.toLowerCase()}`}>
                 <input
                   type="radio"
                   name={question.QuestionID}
@@ -238,7 +303,9 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
                   onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
                   className="choice-input"
                 />
+                <span className="choice-icon">{option === 'Yes' ? '👍' : '👎'}</span>
                 <span className="choice-label">{option}</span>
+                <span className="choice-checkmark">✓</span>
               </label>
             ))}
           </div>
@@ -257,26 +324,168 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
     }
   };
 
+  // Enhanced section navigation
+  const renderSectionNavigation = () => {
+    if (sections.length <= 1) return null;
+
+    return (
+      <div className="section-navigation">
+        <div className="section-tabs">
+          {sections.map((section, index) => {
+            const progress = getSectionProgress(section.questions);
+            const isActive = currentSection === index;
+            const hasAnswers = progress > 0;
+            
+            return (
+              <button
+                key={section.name}
+                className={`section-tab ${isActive ? 'active' : ''} ${hasAnswers ? 'has-progress' : ''}`}
+                onClick={() => setCurrentSection(index)}
+              >
+                <span className="section-name">{section.name}</span>
+                <span className="section-progress">{Math.round(progress)}%</span>
+                <div className="section-progress-bar">
+                  <div 
+                    className="section-progress-fill" 
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   if (!questions || questions.length === 0) {
     return (
       <div className="empty-state">
-        <p>No questions available for this assessment.</p>
+        <div className="empty-icon">📋</div>
+        <h3>No questions available</h3>
+        <p>No questions are available for this assessment at the moment.</p>
       </div>
     );
   }
 
   return (
     <div className="form-renderer">
-      {sortedSections.map((sectionName) => (
-        <div key={sectionName} className="question-section">
-          <div className="section-header">
-            {sectionName}
+      {/* Enhanced header with progress summary */}
+      <div className="form-header">
+        <div className="form-title">
+          <h2>
+            {formType === 'company' ? '🏢 Company Assessment' : '👤 Employee Assessment'}
+            {formType === 'employee' && employeeId && (
+              <span className="employee-id-indicator">#{employeeId}</span>
+            )}
+          </h2>
+          <div className="form-stats">
+            <span className="answered-count">
+              {answeredQuestions.size} of {questions.length} questions answered
+            </span>
           </div>
-          {groupedQuestions[sectionName]
-            .sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
-            .map((question, index) => renderQuestion(question, index))}
         </div>
-      ))}
+      </div>
+
+      {/* Section navigation */}
+      {renderSectionNavigation()}
+
+      {/* Render current section or all sections */}
+      {sections.length > 1 ? (
+        // Single section view with navigation
+        <div className="section-view">
+          {sections[currentSection] && (
+            <div key={sections[currentSection].name} className="question-section">
+              <div className="section-header">
+                <span className="section-icon">📁</span>
+                <span className="section-title">{sections[currentSection].name}</span>
+                <span className="section-question-count">
+                  {sections[currentSection].questions.length} questions
+                </span>
+              </div>
+              
+              <div className="section-progress-summary">
+                <div className="progress-text">
+                  Section Progress: {Math.round(getSectionProgress(sections[currentSection].questions))}%
+                </div>
+              </div>
+
+              {sections[currentSection].questions.map((question, questionIndex) => 
+                renderQuestion(question, questionIndex, currentSection)
+              )}
+            </div>
+          )}
+
+          {/* Section navigation buttons */}
+          <div className="section-navigation-buttons">
+            <button 
+              className="btn btn-secondary"
+              onClick={() => setCurrentSection(Math.max(0, currentSection - 1))}
+              disabled={currentSection === 0}
+            >
+              ← Previous Section
+            </button>
+            <button 
+              className="btn btn-secondary"
+              onClick={() => setCurrentSection(Math.min(sections.length - 1, currentSection + 1))}
+              disabled={currentSection === sections.length - 1}
+            >
+              Next Section →
+            </button>
+          </div>
+        </div>
+      ) : (
+        // All sections view (original behavior)
+        <div className="all-sections-view">
+          {sections.map((section, sectionIndex) => (
+            <div key={section.name} className="question-section">
+              <div className="section-header">
+                <span className="section-icon">📁</span>
+                <span className="section-title">{section.name}</span>
+                <span className="section-question-count">
+                  {section.questions.length} questions
+                </span>
+              </div>
+              
+              {section.questions.map((question, questionIndex) => 
+                renderQuestion(question, questionIndex, sectionIndex)
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Enhanced completion summary */}
+      <div className="completion-summary">
+        <div className="summary-card glass-card">
+          <h3>Assessment Progress</h3>
+          <div className="progress-metrics">
+            <div className="metric">
+              <span className="metric-value">{answeredQuestions.size}</span>
+              <span className="metric-label">Answered</span>
+            </div>
+            <div className="metric">
+              <span className="metric-value">{questions.length - answeredQuestions.size}</span>
+              <span className="metric-label">Remaining</span>
+            </div>
+            <div className="metric">
+              <span className="metric-value">{Math.round((answeredQuestions.size / questions.length) * 100)}%</span>
+              <span className="metric-label">Complete</span>
+            </div>
+          </div>
+          <div className="completion-note">
+            {answeredQuestions.size === questions.length ? (
+              <div className="completion-celebration">
+                🎉 <strong>Assessment Complete!</strong> All questions have been answered.
+              </div>
+            ) : (
+              <div className="completion-encouragement">
+                Keep going! You're making great progress.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
