@@ -32,11 +32,12 @@ const FormRenderer = ({
     questions: groupedQuestions[sectionName].sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
   }));
 
-  // FIXED: Create proper sequential question numbering
+  // CRITICAL FIX: Proper sequential question numbering starting from 1
   const createQuestionMapping = () => {
     const mapping = {};
     let sequentialNumber = 1;
     
+    // Process sections in order and assign sequential numbers
     sections.forEach(section => {
       section.questions.forEach(question => {
         mapping[question.QuestionID] = sequentialNumber;
@@ -44,6 +45,7 @@ const FormRenderer = ({
       });
     });
     
+    console.log('Question numbering mapping created:', mapping);
     return mapping;
   };
 
@@ -54,7 +56,7 @@ const FormRenderer = ({
     const answered = new Set(Object.keys(responses).filter(key => responses[key] !== ''));
     setAnsweredQuestions(answered);
     
-    // Notify parent about current progress
+    // Notify parent about current progress - use answered count as current question
     const totalQuestions = questions.length;
     const answeredCount = answered.size;
     onQuestionChange(answeredCount);
@@ -68,7 +70,7 @@ const FormRenderer = ({
       return;
     }
 
-    // FIXED: Enhanced file upload handling
+    // ENHANCED: Better file upload handling with improved metadata
     if (file) {
       console.log(`File uploaded for question ${questionId}:`, file.name, file.size, file.type);
       
@@ -79,22 +81,27 @@ const FormRenderer = ({
           name: file.name,
           size: file.size,
           type: file.type,
-          uploadedAt: new Date().toISOString()
+          uploadedAt: new Date().toISOString(),
+          questionId: questionId
         }
       }));
 
-      // Create a payload that includes both the answer and file metadata
+      // Create enhanced file metadata for backend
       const fileMetadata = {
         fileName: file.name,
         fileSize: file.size,
         fileType: file.type,
-        uploadedAt: new Date().toISOString()
+        uploadedAt: new Date().toISOString(),
+        questionId: questionId,
+        companyId: companyId,
+        formType: formType,
+        ...(employeeId !== null && { employeeId: employeeId })
       };
 
-      // Combine text answer with file metadata
+      // Combine text answer with file metadata for storage
       const combinedValue = value ? `${value} [FILE: ${file.name}]` : `[FILE: ${file.name}]`;
       
-      console.log(`Saving response with file metadata:`, { value: combinedValue, file: fileMetadata });
+      console.log(`Saving response with enhanced file metadata:`, { value: combinedValue, file: fileMetadata });
       onResponseChange(questionId, combinedValue, fileMetadata);
     } else {
       // Regular response without file
@@ -118,7 +125,7 @@ const FormRenderer = ({
     return isRequired && !hasResponse;
   };
 
-  // FIXED: Enhanced file retrieval logic for returning users
+  // ENHANCED: Better file retrieval logic for returning users
   const getUploadedFileInfo = (questionId) => {
     // Check if response contains file information
     const response = responses[questionId];
@@ -143,11 +150,13 @@ const FormRenderer = ({
     const isAnswered = answeredQuestions.has(question.QuestionID);
     const isIncomplete = isQuestionIncomplete(question);
     
-    // FIXED: Use sequential numbering instead of QuestionOrder
-    const displayNumber = questionNumberMapping[question.QuestionID] || questionIndex + 1;
+    // CRITICAL FIX: Use proper sequential numbering from mapping
+    const displayNumber = questionNumberMapping[question.QuestionID];
     
     // Get file info for display
     const fileInfo = getUploadedFileInfo(question.QuestionID);
+
+    console.log(`Rendering question ${question.QuestionID} with display number: ${displayNumber}`);
 
     return (
       <div 
@@ -179,10 +188,31 @@ const FormRenderer = ({
               onChange={(e) => {
                 const file = e.target.files[0];
                 if (file) {
-                  // FIXED: Better file size validation
+                  // ENHANCED: Better file size validation with user feedback
                   const maxSize = 10 * 1024 * 1024; // 10MB
                   if (file.size > maxSize) {
-                    alert('File size must be less than 10MB');
+                    alert(`File size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds the 10MB limit. Please choose a smaller file.`);
+                    return;
+                  }
+                  
+                  // Enhanced file type validation
+                  const allowedTypes = [
+                    'application/pdf',
+                    'application/msword',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'text/plain',
+                    'image/jpeg',
+                    'image/jpg', 
+                    'image/png',
+                    'image/gif',
+                    'application/vnd.ms-excel',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'application/vnd.ms-powerpoint',
+                    'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                  ];
+                  
+                  if (!allowedTypes.includes(file.type)) {
+                    alert('File type not supported. Please upload PDF, Word, Excel, PowerPoint, text, or image files only.');
                     return;
                   }
                   
@@ -216,6 +246,27 @@ const FormRenderer = ({
                     <span className="file-note">(Previously uploaded)</span>
                   )}
                 </div>
+                {/* Option to remove file */}
+                <button 
+                  type="button" 
+                  className="file-remove-btn"
+                  onClick={() => {
+                    // Remove file from local state
+                    setUploadedFiles(prev => {
+                      const updated = { ...prev };
+                      delete updated[question.QuestionID];
+                      return updated;
+                    });
+                    
+                    // Update response to remove file reference
+                    const currentValue = responses[question.QuestionID] || '';
+                    const textValue = currentValue.replace(/\s*\[FILE:.*?\]\s*/, '').trim();
+                    handleInputChange(question.QuestionID, textValue, null);
+                  }}
+                  title="Remove file"
+                >
+                  ❌
+                </button>
               </div>
             )}
           </div>
