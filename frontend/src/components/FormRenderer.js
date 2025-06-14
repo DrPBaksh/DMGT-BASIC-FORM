@@ -17,6 +17,7 @@ const FormRenderer = ({
   const [answeredQuestions, setAnsweredQuestions] = useState(new Set());
   const [uploadingFiles, setUploadingFiles] = useState({});
   const [fileUploadErrors, setFileUploadErrors] = useState({});
+  const [viewMode, setViewMode] = useState('adaptive'); // 'adaptive', 'compact', 'detailed'
 
   // Group questions by section
   const groupedQuestions = questions.reduce((groups, question) => {
@@ -34,6 +35,77 @@ const FormRenderer = ({
     name: sectionName,
     questions: groupedQuestions[sectionName].sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
   }));
+
+  // ENHANCED: Smart question categorization for layout optimization
+  const categorizeQuestion = (question) => {
+    const { QuestionType, Question, QuestionTypeDetails, AllowFileUpload } = question;
+    const questionLength = Question ? Question.length : 0;
+    const hasLongText = questionLength > 100;
+    const hasFileUpload = AllowFileUpload === 'true';
+    
+    // Determine question complexity and optimal layout
+    if (hasFileUpload || QuestionType === 'textarea' || hasLongText) {
+      return { size: 'full', complexity: 'high' };
+    } else if (QuestionType === 'yes-no' || QuestionType === 'rating' || (QuestionType === 'single-choice' && questionLength < 60)) {
+      return { size: 'compact', complexity: 'low' };
+    } else if (QuestionType === 'multiple-choice' || QuestionType === 'slider') {
+      return { size: 'medium', complexity: 'medium' };
+    } else {
+      return { size: 'medium', complexity: 'medium' };
+    }
+  };
+
+  // ENHANCED: Create optimized question layout groups
+  const createQuestionLayout = (sectionQuestions) => {
+    const layout = [];
+    let currentRow = [];
+    let currentRowWidth = 0;
+    const maxRowWidth = 12; // Using 12-column grid system
+
+    sectionQuestions.forEach((question) => {
+      const category = categorizeQuestion(question);
+      let questionWidth;
+
+      switch (category.size) {
+        case 'compact':
+          questionWidth = 4; // 1/3 width
+          break;
+        case 'medium':
+          questionWidth = 6; // 1/2 width
+          break;
+        case 'full':
+        default:
+          questionWidth = 12; // full width
+          break;
+      }
+
+      // If adding this question would exceed row width, start new row
+      if (currentRowWidth + questionWidth > maxRowWidth || questionWidth === 12) {
+        if (currentRow.length > 0) {
+          layout.push([...currentRow]);
+          currentRow = [];
+          currentRowWidth = 0;
+        }
+      }
+
+      currentRow.push({ question, width: questionWidth, category });
+      currentRowWidth += questionWidth;
+
+      // If this question takes full width, complete the row
+      if (questionWidth === 12) {
+        layout.push([...currentRow]);
+        currentRow = [];
+        currentRowWidth = 0;
+      }
+    });
+
+    // Add any remaining questions in current row
+    if (currentRow.length > 0) {
+      layout.push(currentRow);
+    }
+
+    return layout;
+  };
 
   // FIXED: Create proper sequential question numbering
   const createQuestionMapping = () => {
@@ -63,7 +135,7 @@ const FormRenderer = ({
     onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
-  // CRITICAL FIX: Enhanced file handling with robust CORS fallback
+  // ENHANCED: File handling with robust CORS fallback
   const handleInputChange = async (questionId, value, file = null) => {
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
@@ -74,7 +146,7 @@ const FormRenderer = ({
     // Clear any previous file upload errors for this question
     setFileUploadErrors(prev => ({ ...prev, [questionId]: null }));
 
-    // CRITICAL FIX: File upload handling with robust CORS fallback
+    // File upload handling
     if (file) {
       try {
         console.log(`Processing file upload for question ${questionId}:`, file.name);
@@ -94,7 +166,7 @@ const FormRenderer = ({
         let uploadResult;
         let useLocalStorage = false;
 
-        // CRITICAL FIX: Always use mock service first (safer approach)
+        // Use mock service for file handling
         try {
           console.log('Using local file storage service (backend not configured)');
           uploadResult = await mockFileUploadService.uploadFile(
@@ -148,7 +220,6 @@ const FormRenderer = ({
         console.log(`Saving response with file metadata:`, { value: combinedValue, fileMetadata });
         onResponseChange(questionId, combinedValue, fileMetadata);
 
-        // Show success message for local storage
         if (useLocalStorage) {
           console.log('File stored locally successfully');
         }
@@ -160,7 +231,6 @@ const FormRenderer = ({
           [questionId]: error.message 
         }));
         
-        // ENHANCED: Better error messages for users
         let userMessage = 'File upload failed: ' + error.message;
         
         if (error.message.includes('CORS') || error.message.includes('Failed to fetch') || error.message.includes('execute-api')) {
@@ -168,7 +238,6 @@ const FormRenderer = ({
           console.warn('CORS/Network error detected, file upload service not configured properly');
         }
         
-        // Don't show alert for CORS errors in development
         if (!error.message.includes('CORS') && !error.message.includes('Failed to fetch')) {
           alert(userMessage);
         }
@@ -197,9 +266,8 @@ const FormRenderer = ({
     return isRequired && !hasResponse;
   };
 
-  // ENHANCED: File retrieval logic for returning users
+  // Get uploaded file info for display
   const getUploadedFileInfo = (questionId) => {
-    // Check if response contains file information
     const response = responses[questionId];
     if (response && response.includes('[FILE_ATTACHED:')) {
       const fileMatch = response.match(/\[FILE_ATTACHED: (.+?)\]/);
@@ -235,11 +303,11 @@ const FormRenderer = ({
       }
     }
     
-    // Check local uploaded files (current session)
     return uploadedFiles[questionId] || null;
   };
 
-  const renderQuestion = (question, questionIndex, sectionIndex) => {
+  // ENHANCED: Modern question rendering with adaptive layouts
+  const renderQuestion = (question, questionIndex, sectionIndex, width = 12, category = null) => {
     const value = responses[question.QuestionID] || '';
     const isRequired = question.Required === 'true';
     const allowFileUpload = question.AllowFileUpload === 'true';
@@ -248,92 +316,93 @@ const FormRenderer = ({
     const isUploading = uploadingFiles[question.QuestionID];
     const uploadError = fileUploadErrors[question.QuestionID];
     
-    // FIXED: Use sequential numbering instead of QuestionOrder
     const displayNumber = questionNumberMapping[question.QuestionID] || questionIndex + 1;
-    
-    // Get file info for display
     const fileInfo = getUploadedFileInfo(question.QuestionID);
+    
+    // Determine card size class
+    const sizeClass = width === 4 ? 'compact' : width === 6 ? 'medium' : 'full';
+    const complexityClass = category?.complexity || 'medium';
 
     return (
       <div 
         key={question.QuestionID} 
-        className={`question-item fade-in ${isAnswered ? 'answered' : ''} ${isIncomplete ? 'incomplete' : ''}`}
+        className={`question-card question-${sizeClass} question-${complexityClass} ${isAnswered ? 'answered' : ''} ${isIncomplete ? 'incomplete' : ''}`}
+        style={{ '--grid-width': width }}
       >
-        <div className="question-header">
-          <div className="question-text">
-            {question.Question}
-            {isRequired && <span className="question-required"> *</span>}
-          </div>
-          <div className="question-badges">
-            <div className="question-number">{displayNumber}</div>
-            {isAnswered && <div className="answered-badge">✓</div>}
-            {isIncomplete && <div className="required-badge">!</div>}
-          </div>
-        </div>
-
-        <div className="question-input">
-          {renderInputField(question, value)}
-        </div>
-
-        {allowFileUpload && (
-          <div className="file-upload-container">
-            <input
-              type="file"
-              id={`file-${question.QuestionID}`}
-              className="file-input"
-              onChange={async (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                  // Get current text value and combine with file
-                  const currentValue = responses[question.QuestionID] || '';
-                  const textValue = currentValue
-                    .replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
-                    .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
-                    .replace(/\s*\[FILE:.*?\]\s*/, '')
-                    .trim();
-                  await handleInputChange(question.QuestionID, textValue, file);
-                }
-              }}
-              accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.xlsx,.xls,.ppt,.pptx"
-              disabled={isUploading}
-            />
-            <label 
-              htmlFor={`file-${question.QuestionID}`} 
-              className={`file-upload-button ${isUploading ? 'uploading' : ''}`}
-            >
-              {isUploading ? (
-                <>
-                  <span className="upload-spinner">⏳</span>
-                  Processing...
-                </>
-              ) : (
-                <>
-                  📎 Attach Supporting Document
-                </>
-              )}
-            </label>
-            <div className="file-upload-text">
-              Optional: Attach any relevant documents to support your answer (Max 10MB)
-              <br />
-              <small>Supported formats: PDF, DOC, TXT, Images, Excel, PowerPoint</small>
-              <br />
-              <small className="upload-note">
-                📝 Note: Files are currently stored locally. Backend upload service will be configured soon.
-              </small>
-            </div>
-            
-            {/* ENHANCED: Upload error display with better messaging */}
-            {uploadError && !uploadError.includes('CORS') && !uploadError.includes('Failed to fetch') && (
-              <div className="file-upload-error">
-                <span className="error-icon">❌</span>
-                <span className="error-text">{uploadError}</span>
+        <div className="question-card-inner">
+          <div className="question-header-compact">
+            <div className="question-info">
+              <div className="question-number-badge">{displayNumber}</div>
+              <div className="question-text-wrapper">
+                <div className="question-text">
+                  {question.Question}
+                  {isRequired && <span className="question-required"> *</span>}
+                </div>
+                {question.HelpText && (
+                  <div className="question-help-inline">
+                    <span className="help-icon">💡</span>
+                    <span className="help-text">{question.HelpText}</span>
+                  </div>
+                )}
               </div>
-            )}
-            
-            {/* ENHANCED: Better file display with local storage support */}
-            {fileInfo && !uploadError && (
-              <div className="uploaded-file">
-                <div className="file-info">
+            </div>
+            <div className="question-status">
+              {isAnswered && <div className="answered-indicator">✓</div>}
+              {isIncomplete && <div className="required-indicator">!</div>}
+            </div>
+          </div>
+
+          <div className="question-input-wrapper">
+            {renderInputField(question, value, sizeClass)}
+          </div>
+
+          {allowFileUpload && (
+            <div className={`file-upload-section ${sizeClass === 'compact' ? 'compact' : ''}`}>
+              <input
+                type="file"
+                id={`file-${question.QuestionID}`}
+                className="file-input"
+                onChange={async (e) => {
+                  const file = e.target.files[0];
+                  if (file) {
+                    const currentValue = responses[question.QuestionID] || '';
+                    const textValue = currentValue
+                      .replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
+                      .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
+                      .replace(/\s*\[FILE:.*?\]\s*/, '')
+                      .trim();
+                    await handleInputChange(question.QuestionID, textValue, file);
+                  }
+                }}
+                accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.xlsx,.xls,.ppt,.pptx"
+                disabled={isUploading}
+              />
+              
+              <label 
+                htmlFor={`file-${question.QuestionID}`} 
+                className={`file-upload-btn ${isUploading ? 'uploading' : ''} ${sizeClass}`}
+              >
+                {isUploading ? (
+                  <>
+                    <span className="upload-spinner">⏳</span>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    📎 Attach
+                  </>
+                )}
+              </label>
+
+              {uploadError && !uploadError.includes('CORS') && !uploadError.includes('Failed to fetch') && (
+                <div className="file-error-compact">
+                  <span className="error-icon">❌</span>
+                  <span className="error-text">{uploadError}</span>
+                </div>
+              )}
+              
+              {fileInfo && !uploadError && (
+                <div className="uploaded-file-compact">
                   <span className="file-status">
                     {fileInfo.fromSavedResponse ? '📁' : '✅'} 
                   </span>
@@ -341,38 +410,27 @@ const FormRenderer = ({
                   {fileInfo.size && (
                     <span className="file-size">({formatFileSize(fileInfo.size)})</span>
                   )}
-                  <span className="file-note">
-                    {fileInfo.storedLocally ? '(Stored locally)' : '(Previously uploaded)'}
-                  </span>
-                  {fileInfo.mockId && (
-                    <span className="file-id">ID: {fileInfo.mockId}</span>
-                  )}
                 </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Enhanced help text for better UX */}
-        {question.HelpText && (
-          <div className="question-help">
-            <span className="help-icon">💡</span>
-            <span className="help-text">{question.HelpText}</span>
-          </div>
-        )}
+              )}
+            </div>
+          )}
+        </div>
       </div>
     );
   };
 
-  const renderInputField = (question, value) => {
+  // ENHANCED: Input field rendering with size-aware layouts
+  const renderInputField = (question, value, sizeClass = 'full') => {
     const { QuestionType, QuestionTypeDetails } = question;
     
-    // FIXED: Clean up value to remove file metadata for display in input fields
+    // Clean up value to remove file metadata for display in input fields
     const cleanValue = value ? 
       value.replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
            .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
            .replace(/\s*\[FILE:.*?\]\s*/, '')
            .trim() : '';
+
+    const isCompact = sizeClass === 'compact';
 
     switch (QuestionType) {
       case 'text':
@@ -383,8 +441,8 @@ const FormRenderer = ({
             type={QuestionType}
             value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
-            placeholder={`Enter your ${QuestionType}...`}
+            className={`input-field ${isCompact ? 'compact' : ''}`}
+            placeholder={isCompact ? `Enter ${QuestionType}...` : `Enter your ${QuestionType}...`}
           />
         );
 
@@ -395,7 +453,7 @@ const FormRenderer = ({
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
             className="input-field textarea-field"
             placeholder="Please provide your detailed response..."
-            rows={4}
+            rows={isCompact ? 3 : 4}
           />
         );
 
@@ -405,8 +463,8 @@ const FormRenderer = ({
             type="number"
             value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
-            placeholder="Enter a number..."
+            className={`input-field ${isCompact ? 'compact' : ''}`}
+            placeholder="Enter number..."
           />
         );
 
@@ -416,16 +474,16 @@ const FormRenderer = ({
             type="date"
             value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
+            className={`input-field ${isCompact ? 'compact' : ''}`}
           />
         );
 
       case 'single-choice':
         const singleOptions = QuestionTypeDetails ? QuestionTypeDetails.split('|') : [];
         return (
-          <div className="choice-options">
+          <div className={`choice-options ${isCompact ? 'compact' : ''}`}>
             {singleOptions.map((option, index) => (
-              <label key={index} className={`choice-option ${cleanValue === option ? 'selected' : ''}`}>
+              <label key={index} className={`choice-option ${cleanValue === option ? 'selected' : ''} ${isCompact ? 'compact' : ''}`}>
                 <input
                   type="radio"
                   name={question.QuestionID}
@@ -435,7 +493,7 @@ const FormRenderer = ({
                   className="choice-input"
                 />
                 <span className="choice-label">{option}</span>
-                <span className="choice-checkmark">✓</span>
+                {!isCompact && <span className="choice-checkmark">✓</span>}
               </label>
             ))}
           </div>
@@ -446,9 +504,9 @@ const FormRenderer = ({
         const selectedValues = typeof cleanValue === 'string' ? cleanValue.split(',').filter(v => v) : [];
         
         return (
-          <div className="choice-options">
+          <div className={`choice-options ${isCompact ? 'compact' : ''}`}>
             {multipleOptions.map((option, index) => (
-              <label key={index} className={`choice-option ${selectedValues.includes(option) ? 'selected' : ''}`}>
+              <label key={index} className={`choice-option ${selectedValues.includes(option) ? 'selected' : ''} ${isCompact ? 'compact' : ''}`}>
                 <input
                   type="checkbox"
                   value={option}
@@ -465,19 +523,21 @@ const FormRenderer = ({
                   className="choice-input"
                 />
                 <span className="choice-label">{option}</span>
-                <span className="choice-checkmark">✓</span>
+                {!isCompact && <span className="choice-checkmark">✓</span>}
               </label>
             ))}
-            <div className="selected-count">
-              {selectedValues.length} option{selectedValues.length !== 1 ? 's' : ''} selected
-            </div>
+            {!isCompact && (
+              <div className="selected-count">
+                {selectedValues.length} option{selectedValues.length !== 1 ? 's' : ''} selected
+              </div>
+            )}
           </div>
         );
 
       case 'slider':
         const [min, max] = QuestionTypeDetails ? QuestionTypeDetails.split(',').map(Number) : [0, 100];
         return (
-          <div className="slider-container">
+          <div className={`slider-container ${isCompact ? 'compact' : ''}`}>
             <input
               type="range"
               min={min}
@@ -491,7 +551,7 @@ const FormRenderer = ({
               <span>{max}</span>
             </div>
             <div className="slider-value">
-              Current value: <strong>{cleanValue || min}</strong>
+              <strong>{cleanValue || min}</strong>
             </div>
           </div>
         );
@@ -499,7 +559,7 @@ const FormRenderer = ({
       case 'rating':
         const [ratingMin, ratingMax] = QuestionTypeDetails ? QuestionTypeDetails.split(',').map(Number) : [1, 5];
         return (
-          <div className="rating-container">
+          <div className={`rating-container ${isCompact ? 'compact' : ''}`}>
             <div className="rating-stars">
               {Array.from({ length: ratingMax }, (_, i) => i + 1).map((rating) => (
                 <button
@@ -520,9 +580,9 @@ const FormRenderer = ({
 
       case 'yes-no':
         return (
-          <div className="choice-options yes-no-options">
+          <div className={`choice-options yes-no-options ${isCompact ? 'compact' : ''}`}>
             {['Yes', 'No'].map((option) => (
-              <label key={option} className={`choice-option choice-yn ${cleanValue === option ? 'selected' : ''} ${option.toLowerCase()}`}>
+              <label key={option} className={`choice-option choice-yn ${cleanValue === option ? 'selected' : ''} ${option.toLowerCase()} ${isCompact ? 'compact' : ''}`}>
                 <input
                   type="radio"
                   name={question.QuestionID}
@@ -533,7 +593,7 @@ const FormRenderer = ({
                 />
                 <span className="choice-icon">{option === 'Yes' ? '👍' : '👎'}</span>
                 <span className="choice-label">{option}</span>
-                <span className="choice-checkmark">✓</span>
+                {!isCompact && <span className="choice-checkmark">✓</span>}
               </label>
             ))}
           </div>
@@ -545,39 +605,75 @@ const FormRenderer = ({
             type="text"
             value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
+            className={`input-field ${isCompact ? 'compact' : ''}`}
             placeholder="Enter your response..."
           />
         );
     }
   };
 
-  // Enhanced section navigation
+  // ENHANCED: Modern section navigation with better visual design
   const renderSectionNavigation = () => {
     if (sections.length <= 1) return null;
 
     return (
-      <div className="section-navigation">
-        <div className="section-tabs">
+      <div className="section-navigation-modern">
+        <div className="section-nav-header">
+          <h3>Assessment Sections</h3>
+          <div className="view-mode-toggle">
+            <button 
+              className={`view-btn ${viewMode === 'adaptive' ? 'active' : ''}`}
+              onClick={() => setViewMode('adaptive')}
+              title="Adaptive Layout"
+            >
+              📱
+            </button>
+            <button 
+              className={`view-btn ${viewMode === 'compact' ? 'active' : ''}`}
+              onClick={() => setViewMode('compact')}
+              title="Compact View"
+            >
+              📋
+            </button>
+            <button 
+              className={`view-btn ${viewMode === 'detailed' ? 'active' : ''}`}
+              onClick={() => setViewMode('detailed')}
+              title="Detailed View"
+            >
+              📄
+            </button>
+          </div>
+        </div>
+        
+        <div className="section-tabs-modern">
           {sections.map((section, index) => {
             const progress = getSectionProgress(section.questions);
             const isActive = currentSection === index;
             const hasAnswers = progress > 0;
+            const isComplete = progress === 100;
             
             return (
               <button
                 key={section.name}
-                className={`section-tab ${isActive ? 'active' : ''} ${hasAnswers ? 'has-progress' : ''}`}
+                className={`section-tab-modern ${isActive ? 'active' : ''} ${isComplete ? 'complete' : ''} ${hasAnswers ? 'has-progress' : ''}`}
                 onClick={() => setCurrentSection(index)}
               >
-                <span className="section-name">{section.name}</span>
-                <span className="section-progress">{Math.round(progress)}%</span>
-                <div className="section-progress-bar">
-                  <div 
-                    className="section-progress-fill" 
-                    style={{ width: `${progress}%` }}
-                  />
+                <div className="tab-content">
+                  <div className="tab-header">
+                    <span className="section-name">{section.name}</span>
+                    <span className="question-count">{section.questions.length} questions</span>
+                  </div>
+                  <div className="tab-progress">
+                    <div className="progress-bar-mini">
+                      <div 
+                        className="progress-fill-mini" 
+                        style={{ width: `${progress}%` }}
+                      />
+                    </div>
+                    <span className="progress-text">{Math.round(progress)}%</span>
+                  </div>
                 </div>
+                {isComplete && <div className="completion-badge">✓</div>}
               </button>
             );
           })}
@@ -597,64 +693,98 @@ const FormRenderer = ({
   }
 
   return (
-    <div className="form-renderer">
-      {/* Enhanced header with progress summary */}
-      <div className="form-header">
-        <div className="form-title">
+    <div className="form-renderer-modern">
+      {/* Modern header with enhanced stats */}
+      <div className="form-header-modern">
+        <div className="form-title-section">
           <h2>
             {formType === 'company' ? '🏢 Company Assessment' : '👤 Employee Assessment'}
             {formType === 'employee' && employeeId !== null && (
               <span className="employee-id-indicator">#{employeeId}</span>
             )}
           </h2>
-          <div className="form-stats">
-            <span className="answered-count">
-              {answeredQuestions.size} of {questions.length} questions answered
-            </span>
+          <div className="form-stats-modern">
+            <div className="stat-item">
+              <span className="stat-number">{answeredQuestions.size}</span>
+              <span className="stat-label">Answered</span>
+            </div>
+            <div className="stat-divider">of</div>
+            <div className="stat-item">
+              <span className="stat-number">{questions.length}</span>
+              <span className="stat-label">Total</span>
+            </div>
+            <div className="completion-percentage">
+              {Math.round((answeredQuestions.size / questions.length) * 100)}% Complete
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Section navigation */}
+      {/* Enhanced section navigation */}
       {renderSectionNavigation()}
 
-      {/* Render current section or all sections */}
+      {/* ENHANCED: Modern responsive question grid layout */}
       {sections.length > 1 ? (
-        // Single section view with navigation
-        <div className="section-view">
+        // Single section view with modern grid
+        <div className="section-view-modern">
           {sections[currentSection] && (
-            <div key={sections[currentSection].name} className="question-section">
-              <div className="section-header">
-                <span className="section-icon">📁</span>
-                <span className="section-title">{sections[currentSection].name}</span>
-                <span className="section-question-count">
-                  {sections[currentSection].questions.length} questions
-                </span>
-              </div>
-              
-              <div className="section-progress-summary">
-                <div className="progress-text">
-                  Section Progress: {Math.round(getSectionProgress(sections[currentSection].questions))}%
+            <div key={sections[currentSection].name} className="question-section-modern">
+              <div className="section-header-modern">
+                <div className="section-info">
+                  <h3 className="section-title">{sections[currentSection].name}</h3>
+                  <div className="section-meta">
+                    <span className="question-count">{sections[currentSection].questions.length} questions</span>
+                    <span className="progress-indicator">
+                      {Math.round(getSectionProgress(sections[currentSection].questions))}% complete
+                    </span>
+                  </div>
                 </div>
               </div>
-
-              {sections[currentSection].questions.map((question, questionIndex) => 
-                renderQuestion(question, questionIndex, currentSection)
-              )}
+              
+              {/* Smart grid layout based on view mode */}
+              <div className={`questions-grid questions-grid-${viewMode}`}>
+                {viewMode === 'adaptive' ? (
+                  // Adaptive layout with intelligent grouping
+                  createQuestionLayout(sections[currentSection].questions).map((row, rowIndex) => (
+                    <div key={rowIndex} className="question-row">
+                      {row.map(({ question, width, category }, questionIndex) => 
+                        renderQuestion(question, questionIndex, currentSection, width, category)
+                      )}
+                    </div>
+                  ))
+                ) : viewMode === 'compact' ? (
+                  // Compact layout - maximum questions per row
+                  <div className="questions-grid-compact">
+                    {sections[currentSection].questions.map((question, questionIndex) => 
+                      renderQuestion(question, questionIndex, currentSection, 6, { size: 'compact', complexity: 'low' })
+                    )}
+                  </div>
+                ) : (
+                  // Detailed layout - one question per row
+                  <div className="questions-grid-detailed">
+                    {sections[currentSection].questions.map((question, questionIndex) => 
+                      renderQuestion(question, questionIndex, currentSection, 12, { size: 'full', complexity: 'high' })
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          {/* Section navigation buttons */}
-          <div className="section-navigation-buttons">
+          {/* Modern section navigation */}
+          <div className="section-nav-controls">
             <button 
-              className="btn btn-secondary"
+              className="nav-btn nav-btn-prev"
               onClick={() => setCurrentSection(Math.max(0, currentSection - 1))}
               disabled={currentSection === 0}
             >
               ← Previous Section
             </button>
+            <div className="section-progress-indicator">
+              Section {currentSection + 1} of {sections.length}
+            </div>
             <button 
-              className="btn btn-secondary"
+              className="nav-btn nav-btn-next"
               onClick={() => setCurrentSection(Math.min(sections.length - 1, currentSection + 1))}
               disabled={currentSection === sections.length - 1}
             >
@@ -663,52 +793,103 @@ const FormRenderer = ({
           </div>
         </div>
       ) : (
-        // All sections view (original behavior)
-        <div className="all-sections-view">
+        // All sections view with modern grid
+        <div className="all-sections-view-modern">
           {sections.map((section, sectionIndex) => (
-            <div key={section.name} className="question-section">
-              <div className="section-header">
-                <span className="section-icon">📁</span>
-                <span className="section-title">{section.name}</span>
-                <span className="section-question-count">
-                  {section.questions.length} questions
-                </span>
+            <div key={section.name} className="question-section-modern">
+              <div className="section-header-modern">
+                <div className="section-info">
+                  <h3 className="section-title">{section.name}</h3>
+                  <div className="section-meta">
+                    <span className="question-count">{section.questions.length} questions</span>
+                    <span className="progress-indicator">
+                      {Math.round(getSectionProgress(section.questions))}% complete
+                    </span>
+                  </div>
+                </div>
               </div>
               
-              {section.questions.map((question, questionIndex) => 
-                renderQuestion(question, questionIndex, sectionIndex)
-              )}
+              <div className={`questions-grid questions-grid-${viewMode}`}>
+                {viewMode === 'adaptive' ? (
+                  createQuestionLayout(section.questions).map((row, rowIndex) => (
+                    <div key={rowIndex} className="question-row">
+                      {row.map(({ question, width, category }, questionIndex) => 
+                        renderQuestion(question, questionIndex, sectionIndex, width, category)
+                      )}
+                    </div>
+                  ))
+                ) : viewMode === 'compact' ? (
+                  <div className="questions-grid-compact">
+                    {section.questions.map((question, questionIndex) => 
+                      renderQuestion(question, questionIndex, sectionIndex, 6, { size: 'compact', complexity: 'low' })
+                    )}
+                  </div>
+                ) : (
+                  <div className="questions-grid-detailed">
+                    {section.questions.map((question, questionIndex) => 
+                      renderQuestion(question, questionIndex, sectionIndex, 12, { size: 'full', complexity: 'high' })
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Enhanced completion summary */}
-      <div className="completion-summary">
-        <div className="summary-card glass-card">
-          <h3>Assessment Progress</h3>
-          <div className="progress-metrics">
-            <div className="metric">
-              <span className="metric-value">{answeredQuestions.size}</span>
-              <span className="metric-label">Answered</span>
-            </div>
-            <div className="metric">
-              <span className="metric-value">{questions.length - answeredQuestions.size}</span>
-              <span className="metric-label">Remaining</span>
-            </div>
-            <div className="metric">
-              <span className="metric-value">{Math.round((answeredQuestions.size / questions.length) * 100)}%</span>
-              <span className="metric-label">Complete</span>
+      {/* Modern completion summary */}
+      <div className="completion-summary-modern">
+        <div className="summary-card-modern">
+          <div className="summary-header">
+            <h3>Assessment Progress</h3>
+            <div className="progress-ring">
+              <svg className="progress-ring-svg" width="60" height="60">
+                <circle
+                  className="progress-ring-bg"
+                  stroke="#e5e7eb"
+                  strokeWidth="4"
+                  fill="transparent"
+                  r="26"
+                  cx="30"
+                  cy="30"
+                />
+                <circle
+                  className="progress-ring-progress"
+                  stroke="#3b82f6"
+                  strokeWidth="4"
+                  fill="transparent"
+                  r="26"
+                  cx="30"
+                  cy="30"
+                  strokeDasharray={`${Math.round((answeredQuestions.size / questions.length) * 163.36)} 163.36`}
+                  transform="rotate(-90 30 30)"
+                />
+              </svg>
+              <div className="progress-ring-text">
+                {Math.round((answeredQuestions.size / questions.length) * 100)}%
+              </div>
             </div>
           </div>
-          <div className="completion-note">
+          
+          <div className="progress-details">
+            <div className="detail-item">
+              <span className="detail-number">{answeredQuestions.size}</span>
+              <span className="detail-label">Questions Answered</span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-number">{questions.length - answeredQuestions.size}</span>
+              <span className="detail-label">Remaining</span>
+            </div>
+          </div>
+
+          <div className="completion-status">
             {answeredQuestions.size === questions.length ? (
               <div className="completion-celebration">
                 🎉 <strong>Assessment Complete!</strong> All questions have been answered.
               </div>
             ) : (
               <div className="completion-encouragement">
-                Keep going! You're making great progress.
+                Keep going! You're making excellent progress.
               </div>
             )}
           </div>
