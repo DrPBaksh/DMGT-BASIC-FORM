@@ -165,6 +165,63 @@ body {
   background: var(--neutral-50);
 }
 
+/* Logo - Modern Design */
+.logo {
+  position: absolute;
+  top: var(--spacing-6);
+  left: var(--spacing-6);
+  z-index: 10;
+}
+
+.logo-container {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.logo-icon {
+  position: relative;
+}
+
+.logo-gradient {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-3) var(--spacing-4);
+  box-shadow: var(--shadow-lg);
+  position: relative;
+  overflow: hidden;
+}
+
+.logo-gradient::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.logo-text {
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: white;
+  position: relative;
+  z-index: 1;
+}
+
+.logo-subtitle {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* Header - Modern Gradient Design */
 .app-header {
   background: var(--gradient-primary);
@@ -1556,6 +1613,203 @@ body {
   transform: translateX(8px);
 }
 
+/* Session Card */
+.session-card {
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.session-header {
+  text-align: center;
+  margin-bottom: var(--spacing-8);
+}
+
+.session-icon {
+  font-size: 3rem;
+  margin-bottom: var(--spacing-3);
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.session-header h3 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--neutral-800);
+  margin-bottom: var(--spacing-3);
+}
+
+.session-header p {
+  font-size: 1.125rem;
+  color: var(--neutral-600);
+}
+
+/* Employee ID Input */
+.employee-id-input-section {
+  margin-bottom: var(--spacing-8);
+}
+
+.employee-id-label {
+  display: block;
+  font-weight: 600;
+  color: var(--neutral-700);
+  margin-bottom: var(--spacing-3);
+  font-size: 1.125rem;
+}
+
+.input-wrapper {
+  position: relative;
+}
+
+.employee-id-input {
+  width: 100%;
+  padding: var(--spacing-4);
+  border: 2px solid var(--neutral-200);
+  border-radius: var(--radius-lg);
+  font-size: 1.125rem;
+  transition: all var(--duration-200) var(--ease-out);
+  background: var(--neutral-50);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.employee-id-input:focus {
+  outline: none;
+  border-color: var(--primary-500);
+  background: var(--neutral-0);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.employee-id-input.error {
+  border-color: var(--error-500);
+  background: var(--error-50);
+}
+
+.input-error {
+  margin-top: var(--spacing-3);
+  padding: var(--spacing-3);
+  background: var(--error-50);
+  border: 1px solid var(--error-200);
+  border-radius: var(--radius-lg);
+  color: var(--error-600);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.error-icon {
+  font-size: 1.125rem;
+}
+
+/* Employee ID Help */
+.employee-id-help {
+  margin-top: var(--spacing-4);
+  padding: var(--spacing-5);
+  background: var(--neutral-50);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--neutral-200);
+}
+
+.existing-employees,
+.no-employees {
+  display: flex;
+  gap: var(--spacing-3);
+  align-items: flex-start;
+}
+
+.help-icon {
+  font-size: 1.25rem;
+  color: var(--primary-600);
+  flex-shrink: 0;
+}
+
+.employee-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-2);
+  margin-top: var(--spacing-3);
+}
+
+.employee-id-chip {
+  padding: var(--spacing-2) var(--spacing-3);
+  background: var(--primary-50);
+  color: var(--primary-700);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--primary-200);
+  cursor: pointer;
+  transition: all var(--duration-200) var(--ease-out);
+  font-weight: 500;
+  font-family: var(--font-mono);
+}
+
+.employee-id-chip:hover {
+  background: var(--primary-100);
+  border-color: var(--primary-300);
+}
+
+.employee-id-chip.selected {
+  background: var(--primary-600);
+  color: white;
+  border-color: var(--primary-600);
+}
+
+/* Session Actions */
+.session-actions {
+  display: flex;
+  gap: var(--spacing-4);
+}
+
+/* Session Help */
+.session-help {
+  padding: var(--spacing-6);
+  background: var(--neutral-50);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--neutral-200);
+}
+
+.help-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  margin-bottom: var(--spacing-5);
+}
+
+.help-header h4 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--neutral-800);
+}
+
+.help-items {
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.help-item {
+  display: flex;
+  gap: var(--spacing-3);
+  align-items: flex-start;
+}
+
+.help-bullet {
+  font-size: 1.125rem;
+  color: var(--primary-600);
+  flex-shrink: 0;
+}
+
+.help-text {
+  font-size: 0.875rem;
+  color: var(--neutral-600);
+  line-height: 1.5;
+}
+
+.help-text strong {
+  color: var(--neutral-800);
+  font-weight: 600;
+}
+
 /* Buttons - Modern Design */
 .btn {
   display: inline-flex;
@@ -1710,6 +1964,12 @@ body {
   margin: 0 auto;
 }
 
+.loading-spinner.small {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
@@ -1832,6 +2092,15 @@ body {
 
   .yes-no-options {
     flex-direction: column;
+  }
+
+  .logo {
+    position: static;
+    margin-bottom: var(--spacing-4);
+  }
+
+  .logo-container {
+    justify-content: center;
   }
 }
 
