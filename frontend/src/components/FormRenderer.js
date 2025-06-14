@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 
 const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange, companyId, formType }) => {
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [uploadedFiles, setUploadedFiles] = useState({});
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   // Group questions by section
   const groupedQuestions = questions.reduce((groups, question) => {
@@ -13,15 +15,31 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
     return groups;
   }, {});
 
-  // Sort sections and questions within sections
-  const sortedSections = Object.keys(groupedQuestions).sort();
-  
+  // Flatten questions for step-by-step navigation
+  const allQuestions = Object.values(groupedQuestions)
+    .flat()
+    .sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder));
+
+  const currentQuestion = allQuestions[currentQuestionIndex];
+  const totalQuestions = allQuestions.length;
+  const progress = ((currentQuestionIndex + 1) / totalQuestions) * 100;
+
   useEffect(() => {
-    // Notify parent about current question for progress tracking
-    const totalQuestions = questions.length;
-    const answeredQuestions = Object.keys(responses).length;
-    onQuestionChange(answeredQuestions);
-  }, [responses, questions.length, onQuestionChange]);
+    onQuestionChange(currentQuestionIndex);
+  }, [currentQuestionIndex, onQuestionChange]);
+
+  // Utility function to format option text
+  const formatOptionText = (text) => {
+    if (!text) return '';
+    return text
+      .replace(/_/g, ' ') // Replace underscores with spaces
+      .replace(/([A-Z])/g, ' $1') // Add space before capital letters
+      .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+      .trim() // Remove leading/trailing spaces
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' '); // Proper title case
+  };
 
   const handleInputChange = (questionId, value, file = null) => {
     onResponseChange(questionId, value, file);
@@ -34,51 +52,53 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
     }
   };
 
-  const renderQuestion = (question, index) => {
-    const value = responses[question.QuestionID] || '';
-    const isRequired = question.Required === 'true';
-    const allowFileUpload = question.AllowFileUpload === 'true';
+  const navigateToQuestion = (index) => {
+    if (index >= 0 && index < totalQuestions) {
+      setIsTransitioning(true);
+      setTimeout(() => {
+        setCurrentQuestionIndex(index);
+        setIsTransitioning(false);
+      }, 150);
+    }
+  };
 
+  const nextQuestion = () => {
+    if (currentQuestionIndex < totalQuestions - 1) {
+      navigateToQuestion(currentQuestionIndex + 1);
+    }
+  };
+
+  const previousQuestion = () => {
+    if (currentQuestionIndex > 0) {
+      navigateToQuestion(currentQuestionIndex - 1);
+    }
+  };
+
+  const isAnswered = (question) => {
+    const answer = responses[question.QuestionID];
+    return answer !== undefined && answer !== null && answer !== '';
+  };
+
+  const renderProgressDots = () => {
     return (
-      <div key={question.QuestionID} className="question-item fade-in">
-        <div className="question-header">
-          <div className="question-text">
-            {question.Question}
-            {isRequired && <span className="question-required"> *</span>}
-          </div>
-          <div className="question-number">{question.QuestionOrder}</div>
-        </div>
+      <div className="progress-dots">
+        {allQuestions.map((question, index) => {
+          const isActive = index === currentQuestionIndex;
+          const isCompleted = isAnswered(question);
+          const isAccessible = index <= currentQuestionIndex || isCompleted;
 
-        <div className="question-input">
-          {renderInputField(question, value)}
-        </div>
-
-        {allowFileUpload && (
-          <div className="file-upload-container">
-            <input
-              type="file"
-              id={`file-${question.QuestionID}`}
-              className="file-input"
-              onChange={(e) => {
-                const file = e.target.files[0];
-                if (file) {
-                  handleInputChange(question.QuestionID, value, file);
-                }
-              }}
-            />
-            <label htmlFor={`file-${question.QuestionID}`} className="file-upload-button">
-              📎 Upload Supporting Document
-            </label>
-            <div className="file-upload-text">
-              Optional: Upload any relevant documents to support your answer
-            </div>
-            {uploadedFiles[question.QuestionID] && (
-              <div className="uploaded-file">
-                ✅ Uploaded: {uploadedFiles[question.QuestionID]}
-              </div>
-            )}
-          </div>
-        )}
+          return (
+            <button
+              key={question.QuestionID}
+              className={`progress-dot ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''} ${!isAccessible ? 'disabled' : ''}`}
+              onClick={() => isAccessible && navigateToQuestion(index)}
+              disabled={!isAccessible}
+              title={`Question ${index + 1}: ${question.Question.substring(0, 50)}...`}
+            >
+              {isCompleted ? '✓' : index + 1}
+            </button>
+          );
+        })}
       </div>
     );
   };
@@ -91,64 +111,82 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
       case 'email':
       case 'phone':
         return (
-          <input
-            type={QuestionType}
-            value={value}
-            onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
-            placeholder={`Enter your ${QuestionType}...`}
-          />
+          <div className="input-wrapper">
+            <input
+              type={QuestionType}
+              value={value}
+              onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+              className="modern-input"
+              placeholder={`Enter your ${QuestionType}...`}
+            />
+          </div>
         );
 
       case 'textarea':
         return (
-          <textarea
-            value={value}
-            onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field textarea-field"
-            placeholder="Please provide your detailed response..."
-            rows={4}
-          />
+          <div className="input-wrapper">
+            <textarea
+              value={value}
+              onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+              className="modern-textarea"
+              placeholder="Please provide your detailed response..."
+              rows={4}
+            />
+          </div>
         );
 
       case 'number':
         return (
-          <input
-            type="number"
-            value={value}
-            onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
-            placeholder="Enter a number..."
-          />
+          <div className="input-wrapper">
+            <input
+              type="number"
+              value={value}
+              onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+              className="modern-input"
+              placeholder="Enter a number..."
+            />
+          </div>
         );
 
       case 'date':
         return (
-          <input
-            type="date"
-            value={value}
-            onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
-          />
+          <div className="input-wrapper">
+            <input
+              type="date"
+              value={value}
+              onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+              className="modern-input"
+            />
+          </div>
         );
 
       case 'single-choice':
         const singleOptions = QuestionTypeDetails ? QuestionTypeDetails.split('|') : [];
         return (
-          <div className="choice-options">
-            {singleOptions.map((option, index) => (
-              <label key={index} className={`choice-option ${value === option ? 'selected' : ''}`}>
-                <input
-                  type="radio"
-                  name={question.QuestionID}
-                  value={option}
-                  checked={value === option}
-                  onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-                  className="choice-input"
-                />
-                <span className="choice-label">{option}</span>
-              </label>
-            ))}
+          <div className="choice-grid">
+            {singleOptions.map((option, index) => {
+              const formattedOption = formatOptionText(option);
+              const isSelected = value === option;
+              
+              return (
+                <label key={index} className={`choice-card ${isSelected ? 'selected' : ''}`}>
+                  <input
+                    type="radio"
+                    name={question.QuestionID}
+                    value={option}
+                    checked={isSelected}
+                    onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+                    className="choice-input-hidden"
+                  />
+                  <div className="choice-indicator">
+                    <div className="choice-dot"></div>
+                  </div>
+                  <div className="choice-content">
+                    <span className="choice-text">{formattedOption}</span>
+                  </div>
+                </label>
+              );
+            })}
           </div>
         );
 
@@ -157,48 +195,67 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
         const selectedValues = typeof value === 'string' ? value.split(',').filter(v => v) : [];
         
         return (
-          <div className="choice-options">
-            {multipleOptions.map((option, index) => (
-              <label key={index} className={`choice-option ${selectedValues.includes(option) ? 'selected' : ''}`}>
-                <input
-                  type="checkbox"
-                  value={option}
-                  checked={selectedValues.includes(option)}
-                  onChange={(e) => {
-                    let newValues;
-                    if (e.target.checked) {
-                      newValues = [...selectedValues, option];
-                    } else {
-                      newValues = selectedValues.filter(v => v !== option);
-                    }
-                    handleInputChange(question.QuestionID, newValues.join(','));
-                  }}
-                  className="choice-input"
-                />
-                <span className="choice-label">{option}</span>
-              </label>
-            ))}
+          <div className="choice-grid multi-select">
+            {multipleOptions.map((option, index) => {
+              const formattedOption = formatOptionText(option);
+              const isSelected = selectedValues.includes(option);
+              
+              return (
+                <label key={index} className={`choice-card ${isSelected ? 'selected' : ''}`}>
+                  <input
+                    type="checkbox"
+                    value={option}
+                    checked={isSelected}
+                    onChange={(e) => {
+                      let newValues;
+                      if (e.target.checked) {
+                        newValues = [...selectedValues, option];
+                      } else {
+                        newValues = selectedValues.filter(v => v !== option);
+                      }
+                      handleInputChange(question.QuestionID, newValues.join(','));
+                    }}
+                    className="choice-input-hidden"
+                  />
+                  <div className="choice-indicator">
+                    <div className="choice-check">
+                      {isSelected && <span className="checkmark">✓</span>}
+                    </div>
+                  </div>
+                  <div className="choice-content">
+                    <span className="choice-text">{formattedOption}</span>
+                  </div>
+                </label>
+              );
+            })}
           </div>
         );
 
       case 'slider':
         const [min, max] = QuestionTypeDetails ? QuestionTypeDetails.split(',').map(Number) : [0, 100];
+        const sliderValue = value || min;
         return (
-          <div className="slider-container">
-            <input
-              type="range"
-              min={min}
-              max={max}
-              value={value || min}
-              onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-              className="slider-input"
-            />
-            <div className="slider-labels">
-              <span>{min}</span>
-              <span>{max}</span>
+          <div className="slider-wrapper">
+            <div className="slider-header">
+              <span className="slider-label-min">{min}%</span>
+              <div className="slider-value-display">
+                <span className="slider-current-value">{sliderValue}%</span>
+              </div>
+              <span className="slider-label-max">{max}%</span>
             </div>
-            <div className="slider-value">
-              Current value: {value || min}
+            <div className="modern-slider-container">
+              <input
+                type="range"
+                min={min}
+                max={max}
+                value={sliderValue}
+                onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+                className="modern-slider"
+              />
+              <div 
+                className="slider-fill" 
+                style={{ width: `${((sliderValue - min) / (max - min)) * 100}%` }}
+              ></div>
             </div>
           </div>
         );
@@ -206,77 +263,213 @@ const FormRenderer = ({ questions, responses, onResponseChange, onQuestionChange
       case 'rating':
         const [ratingMin, ratingMax] = QuestionTypeDetails ? QuestionTypeDetails.split(',').map(Number) : [1, 5];
         return (
-          <div className="rating-container">
+          <div className="rating-wrapper">
             <div className="rating-stars">
-              {Array.from({ length: ratingMax }, (_, i) => i + 1).map((rating) => (
-                <button
-                  key={rating}
-                  type="button"
-                  className={`rating-star ${Number(value) >= rating ? 'active' : ''}`}
-                  onClick={() => handleInputChange(question.QuestionID, rating.toString())}
-                >
-                  ⭐
-                </button>
-              ))}
+              {Array.from({ length: ratingMax }, (_, i) => i + 1).map((rating) => {
+                const isActive = Number(value) >= rating;
+                return (
+                  <button
+                    key={rating}
+                    type="button"
+                    className={`rating-star ${isActive ? 'active' : ''}`}
+                    onClick={() => handleInputChange(question.QuestionID, rating.toString())}
+                  >
+                    <span className="star-icon">★</span>
+                  </button>
+                );
+              })}
             </div>
-            <span className="rating-label">
-              {value ? `${value}/${ratingMax}` : 'Not rated'}
-            </span>
+            <div className="rating-label">
+              {value ? `${value} out of ${ratingMax} stars` : 'Click to rate'}
+            </div>
           </div>
         );
 
       case 'yes-no':
         return (
-          <div className="choice-options">
-            {['Yes', 'No'].map((option) => (
-              <label key={option} className={`choice-option ${value === option ? 'selected' : ''}`}>
-                <input
-                  type="radio"
-                  name={question.QuestionID}
-                  value={option}
-                  checked={value === option}
-                  onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-                  className="choice-input"
-                />
-                <span className="choice-label">{option}</span>
-              </label>
-            ))}
+          <div className="yes-no-wrapper">
+            {['Yes', 'No'].map((option) => {
+              const isSelected = value === option;
+              return (
+                <label key={option} className={`yes-no-option ${isSelected ? 'selected' : ''} ${option.toLowerCase()}`}>
+                  <input
+                    type="radio"
+                    name={question.QuestionID}
+                    value={option}
+                    checked={isSelected}
+                    onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+                    className="choice-input-hidden"
+                  />
+                  <div className="yes-no-indicator">
+                    <span className="yes-no-icon">
+                      {option === 'Yes' ? '✓' : '✗'}
+                    </span>
+                  </div>
+                  <span className="yes-no-text">{option}</span>
+                </label>
+              );
+            })}
           </div>
         );
 
       default:
         return (
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
-            className="input-field"
-            placeholder="Enter your response..."
-          />
+          <div className="input-wrapper">
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
+              className="modern-input"
+              placeholder="Enter your response..."
+            />
+          </div>
         );
     }
   };
 
+  const renderFileUpload = (question) => {
+    const allowFileUpload = question.AllowFileUpload === 'true';
+    if (!allowFileUpload) return null;
+
+    return (
+      <div className="file-upload-section">
+        <div className="file-upload-header">
+          <span className="file-upload-icon">📎</span>
+          <span className="file-upload-title">Supporting Documents</span>
+        </div>
+        
+        <div className="file-upload-dropzone">
+          <input
+            type="file"
+            id={`file-${question.QuestionID}`}
+            className="file-input-hidden"
+            onChange={(e) => {
+              const file = e.target.files[0];
+              if (file) {
+                handleInputChange(question.QuestionID, responses[question.QuestionID] || '', file);
+              }
+            }}
+          />
+          <label htmlFor={`file-${question.QuestionID}`} className="file-upload-area">
+            <div className="file-upload-content">
+              <div className="file-upload-icon-large">📄</div>
+              <div className="file-upload-text">
+                <span className="file-upload-primary">Click to upload</span>
+                <span className="file-upload-secondary">or drag and drop</span>
+              </div>
+              <div className="file-upload-note">
+                Upload any relevant documents to support your answer
+              </div>
+            </div>
+          </label>
+        </div>
+
+        {uploadedFiles[question.QuestionID] && (
+          <div className="uploaded-file-display">
+            <span className="file-success-icon">✅</span>
+            <span className="file-name">{uploadedFiles[question.QuestionID]}</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (!questions || questions.length === 0) {
     return (
-      <div className="empty-state">
-        <p>No questions available for this assessment.</p>
+      <div className="empty-state-modern">
+        <div className="empty-icon">📋</div>
+        <h3>No Questions Available</h3>
+        <p>Please check your configuration or try again later.</p>
       </div>
     );
   }
 
+  if (!currentQuestion) {
+    return (
+      <div className="loading-state-modern">
+        <div className="loading-spinner-modern"></div>
+        <p>Loading questions...</p>
+      </div>
+    );
+  }
+
+  const isRequired = currentQuestion.Required === 'true';
+  const value = responses[currentQuestion.QuestionID] || '';
+  const sectionName = currentQuestion.Section || 'General';
+
   return (
-    <div className="form-renderer">
-      {sortedSections.map((sectionName) => (
-        <div key={sectionName} className="question-section">
-          <div className="section-header">
-            {sectionName}
-          </div>
-          {groupedQuestions[sectionName]
-            .sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
-            .map((question, index) => renderQuestion(question, index))}
+    <div className="form-renderer-modern">
+      {/* Progress Header */}
+      <div className="progress-header">
+        <div className="progress-info">
+          <span className="progress-step">Question {currentQuestionIndex + 1} of {totalQuestions}</span>
+          <span className="progress-section">{sectionName}</span>
         </div>
-      ))}
+        <div className="progress-bar-container">
+          <div className="progress-bar-track">
+            <div 
+              className="progress-bar-fill" 
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+          <span className="progress-percentage">{Math.round(progress)}%</span>
+        </div>
+      </div>
+
+      {/* Progress Dots */}
+      {renderProgressDots()}
+
+      {/* Question Card */}
+      <div className={`question-card ${isTransitioning ? 'transitioning' : ''}`}>
+        <div className="question-header-modern">
+          <div className="question-badge">
+            <span className="question-number">{currentQuestion.QuestionOrder}</span>
+          </div>
+          <div className="question-content">
+            <h2 className="question-title">
+              {currentQuestion.Question}
+              {isRequired && <span className="required-indicator">*</span>}
+            </h2>
+          </div>
+        </div>
+
+        <div className="question-body">
+          {renderInputField(currentQuestion, value)}
+          {renderFileUpload(currentQuestion)}
+        </div>
+
+        {/* Navigation */}
+        <div className="question-navigation">
+          <button
+            className="nav-button secondary"
+            onClick={previousQuestion}
+            disabled={currentQuestionIndex === 0}
+          >
+            <span className="nav-icon">←</span>
+            Previous
+          </button>
+          
+          <div className="nav-spacer"></div>
+          
+          <button
+            className="nav-button primary"
+            onClick={nextQuestion}
+            disabled={currentQuestionIndex === totalQuestions - 1}
+          >
+            Next
+            <span className="nav-icon">→</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Completion Summary */}
+      {currentQuestionIndex === totalQuestions - 1 && (
+        <div className="completion-summary">
+          <div className="completion-icon">🎉</div>
+          <h3>Almost Done!</h3>
+          <p>You've reached the final question. Review your answers and complete the assessment.</p>
+        </div>
+      )}
     </div>
   );
 };
