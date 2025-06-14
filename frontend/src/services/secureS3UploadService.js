@@ -1,11 +1,9 @@
 // services/secureS3UploadService.js
-// Secure S3 upload service using presigned URLs from backend
-
-import { v4 as uuidv4 } from 'uuid';
+// FIXED: Secure S3 upload service using presigned URLs from enhanced backend
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://your-api-gateway-url.amazonaws.com/prod';
 
-// Metadata registry service (backend-based)
+// REQUIREMENT: Metadata registry service (backend-based) for file upload tracking
 export class MetadataRegistry {
   constructor() {
     this.apiUrl = API_BASE_URL;
@@ -35,7 +33,8 @@ export class MetadataRegistry {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
       const result = await response.json();
@@ -73,7 +72,7 @@ export class MetadataRegistry {
   }
 }
 
-// Secure S3 Upload Service using presigned URLs
+// REQUIREMENT: Secure S3 Upload Service using presigned URLs with proper metadata
 export class SecureS3UploadService {
   constructor() {
     this.metadataRegistry = new MetadataRegistry();
@@ -81,7 +80,8 @@ export class SecureS3UploadService {
   }
 
   /**
-   * Get presigned URL from backend for secure upload
+   * REQUIREMENT: Get presigned URL from backend for secure upload
+   * Files will be stored under: companies/{companyId}/uploads/{company|employees}/{employeeId}/{questionId}/
    */
   async getPresignedUrl(fileName, fileType, companyId, employeeId, questionId) {
     try {
@@ -100,7 +100,8 @@ export class SecureS3UploadService {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to get presigned URL: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`Failed to get presigned URL: ${response.status} - ${errorText}`);
       }
 
       return await response.json();
@@ -111,7 +112,8 @@ export class SecureS3UploadService {
   }
 
   /**
-   * Upload file using presigned URL (secure method)
+   * REQUIREMENT: Upload file using presigned URL (secure method) and create metadata
+   * This is the main function that handles the complete upload process including metadata
    */
   async uploadFile(file, companyId, employeeId, questionId, additionalMetadata = {}) {
     try {
@@ -122,7 +124,7 @@ export class SecureS3UploadService {
 
       console.log(`Starting secure upload for file: ${file.name}`);
 
-      // Get presigned URL from backend
+      // REQUIREMENT: Get presigned URL from backend
       const presignedData = await this.getPresignedUrl(
         file.name,
         file.type,
@@ -133,7 +135,7 @@ export class SecureS3UploadService {
 
       const { uploadUrl, downloadUrl, s3Key, entryId } = presignedData;
 
-      // Upload file directly to S3 using presigned URL
+      // REQUIREMENT: Upload file directly to S3 using presigned URL
       const uploadResponse = await fetch(uploadUrl, {
         method: 'PUT',
         headers: {
@@ -143,12 +145,12 @@ export class SecureS3UploadService {
       });
 
       if (!uploadResponse.ok) {
-        throw new Error(`S3 upload failed: ${uploadResponse.status}`);
+        throw new Error(`S3 upload failed: ${uploadResponse.status} - ${uploadResponse.statusText}`);
       }
 
       console.log('File uploaded successfully to S3');
 
-      // Update metadata registry through backend
+      // REQUIREMENT: Update metadata registry through backend with complete file information
       const metadata = {
         companyId,
         employeeId: employeeId || null,
@@ -160,27 +162,45 @@ export class SecureS3UploadService {
         downloadUrl,
         formType: employeeId ? 'employee' : 'company',
         entryId,
+        questionText: additionalMetadata.questionText || '',
+        questionOrder: additionalMetadata.questionOrder || null,
+        section: additionalMetadata.section || null,
+        uploadTimestamp: new Date().toISOString(),
         ...additionalMetadata
       };
 
       await this.metadataRegistry.updateRegistry(metadata);
 
+      // REQUIREMENT: Return complete upload result with all necessary information
       return {
         success: true,
         entryId,
         s3Key,
         url: downloadUrl,
-        metadata
+        metadata,
+        fileName: file.name,
+        fileSize: file.size,
+        uploadedAt: metadata.uploadTimestamp
       };
 
     } catch (error) {
       console.error('Error uploading file:', error);
+      
+      // Enhanced error messages for common issues
+      if (error.message.includes('Failed to fetch') || error.message.includes('CORS')) {
+        throw new Error('Upload service is not configured. Please check backend deployment.');
+      } else if (error.message.includes('presigned URL')) {
+        throw new Error('Unable to get upload authorization. Please check your permissions.');
+      } else if (error.message.includes('S3 upload failed')) {
+        throw new Error('File upload to storage failed. Please try again.');
+      }
+      
       throw new Error(`File upload failed: ${error.message}`);
     }
   }
 
   /**
-   * Delete file through backend API
+   * REQUIREMENT: Delete file through backend API with metadata cleanup
    */
   async deleteFile(s3Key, entryId) {
     try {
@@ -193,7 +213,8 @@ export class SecureS3UploadService {
       });
 
       if (!response.ok) {
-        throw new Error(`Delete failed: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`Delete failed: ${response.status} - ${errorText}`);
       }
 
       console.log(`File deleted: ${s3Key}`);
@@ -205,7 +226,7 @@ export class SecureS3UploadService {
   }
 
   /**
-   * Get file download URL through backend
+   * REQUIREMENT: Get file download URL through backend for security
    */
   async getFileUrl(s3Key, expirationTime = 3600) {
     try {
@@ -218,7 +239,8 @@ export class SecureS3UploadService {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to get download URL: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`Failed to get download URL: ${response.status} - ${errorText}`);
       }
 
       const result = await response.json();
@@ -230,14 +252,15 @@ export class SecureS3UploadService {
   }
 
   /**
-   * List company files through backend
+   * REQUIREMENT: List company files through backend with metadata
    */
   async listCompanyFiles(companyId) {
     try {
       const response = await fetch(`${this.apiUrl}/s3/files?companyId=${companyId}`);
       
       if (!response.ok) {
-        throw new Error(`Failed to list files: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`Failed to list files: ${response.status} - ${errorText}`);
       }
 
       return await response.json();
@@ -255,14 +278,86 @@ export class SecureS3UploadService {
       const response = await fetch(`${this.apiUrl}/s3/health`);
       
       if (!response.ok) {
-        return { status: 'unhealthy', message: `API unreachable: ${response.status}` };
+        return { 
+          status: 'unhealthy', 
+          message: `API unreachable: ${response.status}`,
+          timestamp: new Date().toISOString()
+        };
       }
 
       const result = await response.json();
       return result;
     } catch (error) {
       console.error('S3 health check failed:', error);
-      return { status: 'unhealthy', message: error.message };
+      return { 
+        status: 'unhealthy', 
+        message: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * REQUIREMENT: Get files by company and optionally filter by employee
+   */
+  async getFilesForCompany(companyId, employeeId = null) {
+    try {
+      const url = employeeId 
+        ? `${this.apiUrl}/file-registry?companyId=${companyId}&employeeId=${employeeId}`
+        : `${this.apiUrl}/file-registry?companyId=${companyId}`;
+        
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to get files: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error getting files for company:', error);
+      return [];
+    }
+  }
+
+  /**
+   * REQUIREMENT: Get upload statistics for a company
+   */
+  async getUploadStats(companyId) {
+    try {
+      const files = await this.getFilesForCompany(companyId);
+      
+      const stats = {
+        totalFiles: files.length,
+        totalSize: files.reduce((sum, file) => sum + (file.fileSize || 0), 0),
+        fileTypes: {},
+        employeeUploads: {},
+        questionUploads: {},
+        uploadsByDate: {}
+      };
+
+      files.forEach(file => {
+        // Count by file type
+        const fileType = file.fileType || 'unknown';
+        stats.fileTypes[fileType] = (stats.fileTypes[fileType] || 0) + 1;
+
+        // Count by employee
+        const empId = file.employeeId || 'company';
+        stats.employeeUploads[empId] = (stats.employeeUploads[empId] || 0) + 1;
+
+        // Count by question
+        const qId = file.questionId || 'unknown';
+        stats.questionUploads[qId] = (stats.questionUploads[qId] || 0) + 1;
+
+        // Count by date
+        const uploadDate = file.uploadTimestamp ? 
+          new Date(file.uploadTimestamp).toDateString() : 'unknown';
+        stats.uploadsByDate[uploadDate] = (stats.uploadsByDate[uploadDate] || 0) + 1;
+      });
+
+      return stats;
+    } catch (error) {
+      console.error('Error getting upload stats:', error);
+      return null;
     }
   }
 }
@@ -271,10 +366,10 @@ export class SecureS3UploadService {
 export const secureS3UploadService = new SecureS3UploadService();
 export const metadataRegistry = new MetadataRegistry();
 
-// Export utility functions (reuse from fileUtils)
+// REQUIREMENT: Export utility functions for file validation
 export const validateFileType = (file, allowedTypes = []) => {
   if (allowedTypes.length === 0) {
-    // Default allowed types
+    // Default allowed types as per requirements
     allowedTypes = [
       'application/pdf',
       'application/msword',
@@ -306,6 +401,61 @@ export const formatFileSize = (sizeInBytes) => {
   const i = Math.floor(Math.log(sizeInBytes) / Math.log(k));
   
   return parseFloat((sizeInBytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+// REQUIREMENT: Export helper functions for file management
+export const getFileExtension = (fileName) => {
+  return fileName.split('.').pop().toLowerCase();
+};
+
+export const generateFileName = (originalName, companyId, employeeId, questionId) => {
+  const timestamp = Date.now();
+  const extension = getFileExtension(originalName);
+  const baseName = originalName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, '_');
+  
+  if (employeeId) {
+    return `${companyId}_emp${employeeId}_${questionId}_${timestamp}_${baseName}.${extension}`;
+  } else {
+    return `${companyId}_company_${questionId}_${timestamp}_${baseName}.${extension}`;
+  }
+};
+
+export const isImageFile = (fileType) => {
+  return fileType.startsWith('image/');
+};
+
+export const isDocumentFile = (fileType) => {
+  const documentTypes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain'
+  ];
+  return documentTypes.includes(fileType);
+};
+
+export const isSpreadsheetFile = (fileType) => {
+  const spreadsheetTypes = [
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  ];
+  return spreadsheetTypes.includes(fileType);
+};
+
+export const isPresentationFile = (fileType) => {
+  const presentationTypes = [
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  ];
+  return presentationTypes.includes(fileType);
+};
+
+export const getFileTypeIcon = (fileType) => {
+  if (isImageFile(fileType)) return '🖼️';
+  if (isDocumentFile(fileType)) return '📄';
+  if (isSpreadsheetFile(fileType)) return '📊';
+  if (isPresentationFile(fileType)) return '📽️';
+  return '📎';
 };
 
 export default SecureS3UploadService;
