@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { secureS3UploadService, validateFileType, validateFileSize, formatFileSize } from '../services/secureS3UploadService';
+import { mockFileUploadService, validateFileType, validateFileSize, formatFileSize } from '../services/mockFileUploadService';
 
 const FormRenderer = ({ 
   questions, 
@@ -63,7 +63,7 @@ const FormRenderer = ({
     onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
-  // ENHANCED: Better file handling with secure S3 integration
+  // ENHANCED: Better file handling with fallback for CORS issues
   const handleInputChange = async (questionId, value, file = null) => {
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
@@ -74,7 +74,7 @@ const FormRenderer = ({
     // Clear any previous file upload errors for this question
     setFileUploadErrors(prev => ({ ...prev, [questionId]: null }));
 
-    // ENHANCED: Secure S3 file upload handling
+    // ENHANCED: File upload handling with CORS fallback
     if (file) {
       try {
         console.log(`Processing file upload for question ${questionId}:`, file.name);
@@ -91,8 +91,8 @@ const FormRenderer = ({
         // Set uploading state
         setUploadingFiles(prev => ({ ...prev, [questionId]: true }));
 
-        // Upload file using secure service
-        const uploadResult = await secureS3UploadService.uploadFile(
+        // Use mock service (fallback for when backend is not ready)
+        const uploadResult = await mockFileUploadService.uploadFile(
           file, 
           companyId, 
           employeeId, 
@@ -103,16 +103,15 @@ const FormRenderer = ({
           }
         );
 
-        console.log('File uploaded successfully:', uploadResult);
+        console.log('File processed successfully:', uploadResult);
 
         // Store file info locally for display
         const fileInfo = {
           name: file.name,
           size: file.size,
           type: file.type,
-          s3Key: uploadResult.s3Key,
-          downloadUrl: uploadResult.url,
-          entryId: uploadResult.entryId,
+          mockId: uploadResult.mockId,
+          storedLocally: true,
           uploadedAt: new Date().toISOString()
         };
 
@@ -126,16 +125,15 @@ const FormRenderer = ({
           fileName: file.name,
           fileSize: file.size,
           fileType: file.type,
-          s3Key: uploadResult.s3Key,
-          downloadUrl: uploadResult.url,
-          entryId: uploadResult.entryId,
+          mockId: uploadResult.mockId,
+          storedLocally: true,
           uploadedAt: new Date().toISOString()
         };
 
         // Combine text answer with file metadata
-        const combinedValue = value ? `${value} [FILE_UPLOADED: ${file.name}]` : `[FILE_UPLOADED: ${file.name}]`;
+        const combinedValue = value ? `${value} [FILE_ATTACHED: ${file.name}]` : `[FILE_ATTACHED: ${file.name}]`;
         
-        console.log(`Saving response with S3 file metadata:`, { value: combinedValue, fileMetadata });
+        console.log(`Saving response with file metadata:`, { value: combinedValue, fileMetadata });
         onResponseChange(questionId, combinedValue, fileMetadata);
 
       } catch (error) {
@@ -144,7 +142,13 @@ const FormRenderer = ({
           ...prev, 
           [questionId]: error.message 
         }));
-        alert(`File upload failed: ${error.message}`);
+        
+        // Show user-friendly error message
+        if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
+          alert('File upload service is not available yet. Your answers are still being saved, but files cannot be uploaded until the backend is configured.');
+        } else {
+          alert(`File upload failed: ${error.message}`);
+        }
       } finally {
         setUploadingFiles(prev => ({ ...prev, [questionId]: false }));
       }
@@ -170,29 +174,40 @@ const FormRenderer = ({
     return isRequired && !hasResponse;
   };
 
-  // ENHANCED: File retrieval logic for returning users with S3 support
+  // ENHANCED: File retrieval logic for returning users
   const getUploadedFileInfo = (questionId) => {
     // Check if response contains file information
     const response = responses[questionId];
+    if (response && response.includes('[FILE_ATTACHED:')) {
+      const fileMatch = response.match(/\[FILE_ATTACHED: (.+?)\]/);
+      if (fileMatch) {
+        return {
+          name: fileMatch[1],
+          fromSavedResponse: true,
+          storedLocally: true
+        };
+      }
+    }
+    
+    // Legacy support for old file formats
     if (response && response.includes('[FILE_UPLOADED:')) {
       const fileMatch = response.match(/\[FILE_UPLOADED: (.+?)\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
           fromSavedResponse: true,
-          isS3File: true
+          storedLocally: false
         };
       }
     }
     
-    // Legacy support for old file format
     if (response && response.includes('[FILE:')) {
       const fileMatch = response.match(/\[FILE: (.+?)\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
           fromSavedResponse: true,
-          isS3File: false
+          storedLocally: false
         };
       }
     }
@@ -249,6 +264,7 @@ const FormRenderer = ({
                   // Get current text value and combine with file
                   const currentValue = responses[question.QuestionID] || '';
                   const textValue = currentValue
+                    .replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
                     .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
                     .replace(/\s*\[FILE:.*?\]\s*/, '')
                     .trim();
@@ -265,18 +281,20 @@ const FormRenderer = ({
               {isUploading ? (
                 <>
                   <span className="upload-spinner">⏳</span>
-                  Uploading...
+                  Processing...
                 </>
               ) : (
                 <>
-                  📎 Upload Supporting Document
+                  📎 Attach Supporting Document
                 </>
               )}
             </label>
             <div className="file-upload-text">
-              Optional: Upload any relevant documents to support your answer (Max 10MB)
+              Optional: Attach any relevant documents to support your answer (Max 10MB)
               <br />
               <small>Supported formats: PDF, DOC, TXT, Images, Excel, PowerPoint</small>
+              <br />
+              <small className="upload-note">Note: Files are stored locally until backend upload service is configured</small>
             </div>
             
             {/* Upload error display */}
@@ -287,7 +305,7 @@ const FormRenderer = ({
               </div>
             )}
             
-            {/* ENHANCED: Better file display with S3 support */}
+            {/* ENHANCED: Better file display with local storage support */}
             {fileInfo && !uploadError && (
               <div className="uploaded-file">
                 <div className="file-info">
@@ -298,20 +316,11 @@ const FormRenderer = ({
                   {fileInfo.size && (
                     <span className="file-size">({formatFileSize(fileInfo.size)})</span>
                   )}
-                  {fileInfo.fromSavedResponse && (
-                    <span className="file-note">
-                      {fileInfo.isS3File ? '(Stored securely)' : '(Previously uploaded)'}
-                    </span>
-                  )}
-                  {fileInfo.downloadUrl && (
-                    <a 
-                      href={fileInfo.downloadUrl} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="file-download-link"
-                    >
-                      📥 Download
-                    </a>
+                  <span className="file-note">
+                    {fileInfo.storedLocally ? '(Stored locally)' : '(Previously uploaded)'}
+                  </span>
+                  {fileInfo.mockId && (
+                    <span className="file-id">ID: {fileInfo.mockId}</span>
                   )}
                 </div>
               </div>
@@ -335,7 +344,10 @@ const FormRenderer = ({
     
     // FIXED: Clean up value to remove file metadata for display in input fields
     const cleanValue = value ? 
-      value.replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '').replace(/\s*\[FILE:.*?\]\s*/, '').trim() : '';
+      value.replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
+           .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
+           .replace(/\s*\[FILE:.*?\]\s*/, '')
+           .trim() : '';
 
     switch (QuestionType) {
       case 'text':
