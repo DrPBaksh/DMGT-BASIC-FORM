@@ -36,10 +36,10 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
       return;
     }
 
-    // Validate employee ID format (should be a number)
+    // FIXED: Validate employee ID format - accept 0 and positive numbers
     const numericId = parseInt(employeeId.trim());
-    if (isNaN(numericId) || numericId <= 0) {
-      setError('Employee ID must be a valid number');
+    if (isNaN(numericId) || numericId < 0) {
+      setError('Employee ID must be a valid number (0 or greater)');
       return;
     }
 
@@ -160,7 +160,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
             <div className="help-item">
               <span className="help-bullet">•</span>
               <span className="help-text">
-                <strong>Returning employees:</strong> Use your previously assigned Employee ID to continue where you left off.
+                <strong>Returning employees:</strong> Use your previously assigned Employee ID (including 0) to continue where you left off.
               </span>
             </div>
             <div className="help-item">
@@ -247,8 +247,8 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                   setError('');
                 }}
                 className={`employee-id-input ${error ? 'error' : ''}`}
-                placeholder="Enter your Employee ID (e.g., 1001)"
-                min="1"
+                placeholder="Enter your Employee ID (e.g., 0, 1, 2...)"
+                min="0"
                 disabled={loading}
               />
             </div>
@@ -279,7 +279,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                       </span>
                     ))}
                   </div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--neutral-600)', marginTop: 'var(--spacing-2)' }}>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--gray-600)', marginTop: 'var(--spacing-2)' }}>
                     Click on an ID to select it, or enter your ID manually above.
                   </div>
                 </div>
@@ -294,7 +294,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                 <span className="help-icon">ℹ️</span>
                 <div>
                   <strong>No existing employee assessments found</strong>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--neutral-600)', marginTop: 'var(--spacing-2)' }}>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--gray-600)', marginTop: 'var(--spacing-2)' }}>
                     If you believe you have a previous assessment, double-check your Employee ID. 
                     Otherwise, consider starting a new assessment.
                   </div>
