@@ -44,6 +44,22 @@ function App() {
     { id: 'employee', label: 'Employee Assessment', icon: '👤' }
   ];
 
+  // CRITICAL FIX: Simplified session management for company tab
+  useEffect(() => {
+    if (activeTab === 'company') {
+      // For company tab, always mark session as ready immediately
+      setEmployeeSessionReady(true);
+      setSessionInitialized(true);
+      console.log('Company tab: Session marked as ready');
+    } else {
+      // For employee tab, reset session state
+      if (!sessionInitialized) {
+        setEmployeeSessionReady(false);
+        console.log('Employee tab: Waiting for session setup');
+      }
+    }
+  }, [activeTab, sessionInitialized]);
+
   // ENHANCED: Improved question loading with better dependency management
   useEffect(() => {
     const shouldLoadQuestions = () => {
@@ -220,7 +236,7 @@ function App() {
     }
   };
 
-  // CRITICAL FIX: Enhanced saveResponse function with proper completion logic and duplicate prevention
+  // CRITICAL FIX: Enhanced saveResponse function with proper response handling
   const saveResponse = async (questionId, answer, file = null) => {
     // CRITICAL FIX: Prevent duplicate saves and race conditions
     const now = Date.now();
@@ -232,11 +248,19 @@ function App() {
     setIsSaving(true);
     setLastSaveTimestamp(now);
 
-    // CRITICAL FIX: Don't allow saving if employee session not properly initialized
-    if (activeTab === 'employee' && !sessionInitialized) {
-      console.warn('Attempted to save response before employee session was initialized');
-      setIsSaving(false);
-      return;
+    // CRITICAL FIX: Better session validation for employee forms
+    if (activeTab === 'employee') {
+      if (!sessionInitialized || (!employeeSessionMode)) {
+        console.warn('Cannot save: Employee session not properly initialized', {
+          sessionInitialized,
+          employeeSessionMode,
+          employeeSessionReady
+        });
+        setSaveStatus('error');
+        alert('Employee session not ready. Please set up your employee session first.');
+        setIsSaving(false);
+        return;
+      }
     }
 
     // ENHANCED: Check if company modifications are allowed
@@ -308,6 +332,8 @@ function App() {
         console.log(`Company save: ${answeredQuestions}/${totalQuestions} questions answered (${payload.completionPercentage}%)`);
       }
 
+      console.log('Sending payload to backend:', payload);
+
       const response = await fetch(`${API_BASE_URL}/responses`, {
         method: 'POST',
         headers: {
@@ -316,36 +342,45 @@ function App() {
         body: JSON.stringify(payload)
       });
 
+      // CRITICAL FIX: Proper response handling to prevent "body stream already read" error
+      let responseData = null;
+      const responseText = await response.text(); // Read as text first
+      
+      if (responseText) {
+        try {
+          responseData = JSON.parse(responseText); // Then parse as JSON
+        } catch (parseError) {
+          console.error('Error parsing response JSON:', parseError);
+          responseData = { error: 'Invalid response format' };
+        }
+      }
+
       if (!response.ok) {
-        const errorData = await response.json();
-        
         // ENHANCED: Better error handling for different scenarios
-        if (errorData.error) {
-          if (errorData.error.includes('company questionnaire modifications not allowed')) {
+        if (responseData && responseData.error) {
+          if (responseData.error.includes('company questionnaire modifications not allowed')) {
             alert('Company questionnaire modifications are not allowed at this time. Please contact an administrator.');
             setCompanyCanModify(false);
             setSaveStatus('error');
             setIsSaving(false);
             return;
-          } else if (errorData.error.includes('already completed') && activeTab === 'company') {
+          } else if (responseData.error.includes('already completed') && activeTab === 'company') {
             // CRITICAL FIX: Only show this if it's actually completed, not in progress
-            if (errorData.explicitlyComplete === true) {
+            if (responseData.explicitlyComplete === true) {
               alert('Company questionnaire has been explicitly completed. You can still modify responses, but changes will update the last modified date.');
               setCompanyFormState('completed');
             }
             // Don't block the save - allow modifications
           } else {
-            throw new Error(errorData.error);
+            throw new Error(responseData.error);
           }
         } else {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
       }
-
-      const responseData = await response.json();
       
       // ENHANCED: Handle completion status updates properly
-      if (activeTab === 'company') {
+      if (activeTab === 'company' && responseData) {
         // Update company status based on response
         if (responseData.completionPercentage !== undefined) {
           setCompanyStatus(prev => ({
@@ -371,6 +406,7 @@ function App() {
       if (activeTab === 'employee' && 
           employeeSessionMode === 'new' && 
           currentEmployeeId === null && 
+          responseData && 
           responseData.employeeId !== undefined) {
         
         setCurrentEmployeeId(responseData.employeeId);
@@ -415,7 +451,7 @@ function App() {
     setCurrentQuestionIndex(0);
     setSaveStatus('');
     
-    // ENHANCED: Better state management when switching tabs
+    // CRITICAL FIX: Better state management when switching tabs
     if (tabId === 'employee') {
       // Clear responses when switching to employee tab
       setResponses({});
@@ -425,7 +461,7 @@ function App() {
         resetEmployeeSession();
       }
     } else {
-      // Company tab
+      // Company tab - always ready
       setEmployeeSessionReady(true);
       setSessionInitialized(true);
       // Load company responses if they exist
@@ -455,7 +491,7 @@ function App() {
     }
   };
 
-  // ENHANCED: Enhanced employee session setup with proper state management
+  // CRITICAL FIX: Enhanced employee session setup with proper state management
   const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
     console.log(`Setting up employee session: mode=${mode}, employeeId=${employeeId}`);
     
