@@ -120,7 +120,7 @@ function App() {
     }
   };
 
-  // FIXED: Enhanced saveResponse function with better employee session handling
+  // FIXED: Enhanced saveResponse function with better company completion logic
   const saveResponse = async (questionId, answer, file = null) => {
     // CRITICAL FIX: Don't allow saving if employee session not properly initialized
     if (activeTab === 'employee' && !sessionInitialized) {
@@ -170,8 +170,15 @@ function App() {
 
       if (!response.ok) {
         const errorData = await response.json();
+        
+        // FIXED: Better handling of completion status from backend
         if (errorData.error && errorData.error.includes('already completed')) {
-          alert('Company questionnaire has already been completed for this Company ID.');
+          // Only show alert and block further saves if it's actually completed
+          if (activeTab === 'company') {
+            alert('Company questionnaire has already been completed for this Company ID.');
+            // Update company status to reflect completion
+            setCompanyStatus(prev => ({ ...prev, companyCompleted: true }));
+          }
           setSaveStatus('error');
           return;
         }
@@ -179,6 +186,13 @@ function App() {
       }
 
       const responseData = await response.json();
+      
+      // FIXED: Only mark as completed when backend explicitly says so
+      // Don't assume completion based on single question save
+      if (responseData.completed && activeTab === 'company') {
+        console.log('Company assessment marked as completed by backend');
+        setCompanyStatus(prev => ({ ...prev, companyCompleted: true }));
+      }
 
       // FIXED: Capture employee ID for new employees (first save only)
       if (activeTab === 'employee' && 
@@ -210,9 +224,13 @@ function App() {
   };
 
   const handleTabChange = (tabId) => {
+    // FIXED: Only prevent tab change if company is actually completed AND we have all questions answered
     if (tabId === 'company' && companyStatus.companyCompleted) {
-      alert('Company questionnaire has already been completed for this Company ID.');
-      return;
+      const allQuestionsAnswered = questions.length > 0 && Object.keys(responses).length === questions.length;
+      if (allQuestionsAnswered) {
+        alert('Company questionnaire has already been completed for this Company ID.');
+        return;
+      }
     }
     
     console.log(`Switching to tab: ${tabId}`);
