@@ -1272,7 +1272,7 @@ body {
   display: inline-block;
 }
 
-/* File Upload */
+/* Enhanced File Upload */
 .file-upload-container {
   margin-top: var(--spacing-6);
   padding: var(--spacing-6);
@@ -1317,14 +1317,49 @@ body {
   color: var(--gray-600);
 }
 
+/* Enhanced File Display */
 .uploaded-file {
   margin-top: var(--spacing-3);
-  padding: var(--spacing-3) var(--spacing-4);
+  padding: var(--spacing-4);
   background: var(--success-50);
-  color: var(--success-700);
+  border: 1px solid var(--success-200);
   border-radius: var(--radius-lg);
-  font-weight: 500;
   display: inline-block;
+  min-width: 250px;
+}
+
+.file-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+}
+
+.file-status {
+  font-size: 1.125rem;
+  flex-shrink: 0;
+}
+
+.file-name {
+  font-weight: 600;
+  color: var(--success-700);
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.file-size {
+  font-size: 0.75rem;
+  color: var(--success-600);
+  font-weight: 500;
+}
+
+.file-note {
+  font-size: 0.75rem;
+  color: var(--success-600);
+  font-style: italic;
+  width: 100%;
+  margin-top: var(--spacing-1);
 }
 
 /* Question Help */
@@ -2102,6 +2137,12 @@ body {
 
   .logo-container {
     justify-content: center;
+  }
+
+  .file-info {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--spacing-1);
   }
 }
 
