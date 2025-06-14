@@ -1,93 +1,236 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 
 const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) => {
   const [sessionMode, setSessionMode] = useState(null); // 'new' or 'returning'
   const [employeeId, setEmployeeId] = useState('');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
   const [loading, setLoading] = useState(false);
-  const [validationError, setValidationError] = useState('');
+  const [error, setError] = useState('');
 
-  // Clear validation error when employee ID changes
-  useEffect(() => {
-    setValidationError('');
-  }, [employeeId]);
-
-  const handleNewEmployee = () => {
-    console.log('New employee button clicked');
-    setSessionMode('new');
-    // Call onSessionSetup immediately for new employees
-    onSessionSetup('new');
+  const handleSessionModeSelect = (mode) => {
+    setSessionMode(mode);
+    setError('');
+    setEmployeeId('');
+    setSelectedEmployeeId('');
   };
 
-  const handleReturningEmployee = () => {
-    console.log('Returning employee button clicked');
-    setSessionMode('returning');
-    setValidationError('');
-  };
-
-  const validateEmployeeId = () => {
-    if (!employeeId.trim()) {
-      setValidationError('Please enter your Employee ID');
-      return false;
-    }
-
-    const employeeIdNum = parseInt(employeeId);
-    if (isNaN(employeeIdNum) || employeeIdNum < 0) {
-      setValidationError('Please enter a valid Employee ID (number)');
-      return false;
-    }
-
-    // Check if the employee ID exists in the company's employee list
-    if (companyStatus.employeeIds && companyStatus.employeeIds.length > 0 && !companyStatus.employeeIds.includes(employeeIdNum)) {
-      setValidationError(`Employee ID ${employeeIdNum} not found for this company. Available IDs: ${companyStatus.employeeIds.join(', ')}`);
-      return false;
-    }
-
-    return true;
-  };
-
-  const handleEmployeeIdSubmit = async () => {
-    if (!validateEmployeeId()) return;
-
-    const employeeIdNum = parseInt(employeeId);
+  const handleNewEmployeeStart = async () => {
     setLoading(true);
-    setValidationError('');
-    
-    console.log(`Submitting returning employee ID: ${employeeIdNum}`);
+    setError('');
     
     try {
-      await onSessionSetup('returning', employeeIdNum);
+      // Start new employee session
+      await onSessionSetup('new');
+      console.log('New employee session started');
     } catch (error) {
-      console.error('Error setting up returning employee session:', error);
-      setValidationError('Failed to load employee data. Please try again.');
-    } finally {
+      console.error('Error starting new employee session:', error);
+      setError('Failed to start new employee session. Please try again.');
+    }
+    
+    setLoading(false);
+  };
+
+  const handleReturningEmployeeStart = async () => {
+    if (!employeeId.trim()) {
+      setError('Please enter your Employee ID');
+      return;
+    }
+
+    // Validate employee ID format (should be a number)
+    const numericId = parseInt(employeeId.trim());
+    if (isNaN(numericId) || numericId <= 0) {
+      setError('Employee ID must be a valid number');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    
+    try {
+      // Try to load returning employee session
+      await onSessionSetup('returning', numericId);
+      console.log(`Returning employee session loaded for ID: ${numericId}`);
+    } catch (error) {
+      console.error('Error loading returning employee session:', error);
+      setError('Failed to load employee session. Please check your Employee ID and try again.');
       setLoading(false);
     }
   };
 
-  const handleBackToSelection = () => {
-    setSessionMode(null);
-    setEmployeeId('');
-    setValidationError('');
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter') {
-      handleEmployeeIdSubmit();
-    }
-  };
-
-  const handleEmployeeIdChipClick = (id) => {
+  const handleEmployeeIdSelect = (id) => {
+    setSelectedEmployeeId(id);
     setEmployeeId(id.toString());
+    setError('');
   };
 
-  if (sessionMode === 'returning') {
-    return (
-      <div className="employee-session-manager">
+  const renderSessionModeSelection = () => (
+    <div className="employee-session-manager">
+      <div className="glass-card">
+        <div className="session-intro">
+          <div className="intro-icon">👤</div>
+          <h3>Employee Assessment Setup</h3>
+          <p>
+            Welcome to the employee assessment section. Please choose whether you're 
+            starting a new assessment or continuing a previous one.
+          </p>
+          
+          {/* Company Status Summary */}
+          <div className="company-stats">
+            <div className="stat-item">
+              <div className="stat-icon">🏢</div>
+              <span className="stat-number">{companyStatus.companyCompleted ? '✓' : '○'}</span>
+              <span className="stat-label">Company Assessment</span>
+            </div>
+            <div className="stat-item">
+              <div className="stat-icon">👥</div>
+              <span className="stat-number">{companyStatus.employeeCount || 0}</span>
+              <span className="stat-label">Employees Assessed</span>
+            </div>
+            <div className="stat-item">
+              <div className="stat-icon">📊</div>
+              <span className="stat-number">{companyStatus.employeeIds?.length || 0}</span>
+              <span className="stat-label">Active Sessions</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="session-options">
+          <div 
+            className="session-option"
+            onClick={() => handleSessionModeSelect('new')}
+          >
+            <div className="option-icon">
+              <div className="icon-circle new">
+                ✨
+              </div>
+            </div>
+            <div className="option-content">
+              <h4>New Employee Assessment</h4>
+              <p>Start a fresh assessment for a new employee. You'll be assigned a unique Employee ID.</p>
+              <div className="option-details">
+                <span className="option-badge new">
+                  <span>🆕</span>
+                  <span>Start Fresh</span>
+                </span>
+              </div>
+            </div>
+            <div className="option-arrow">
+              <span className="arrow-icon">→</span>
+            </div>
+          </div>
+
+          <div 
+            className="session-option"
+            onClick={() => handleSessionModeSelect('returning')}
+          >
+            <div className="option-icon">
+              <div className="icon-circle returning">
+                🔄
+              </div>
+            </div>
+            <div className="option-content">
+              <h4>Continue Previous Assessment</h4>
+              <p>Resume an existing assessment using your previously assigned Employee ID.</p>
+              <div className="option-details">
+                <span className="option-badge returning">
+                  <span>↩️</span>
+                  <span>Resume Session</span>
+                </span>
+              </div>
+            </div>
+            <div className="option-arrow">
+              <span className="arrow-icon">→</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Help Section */}
+        <div className="session-help">
+          <div className="help-header">
+            <span className="help-icon">💡</span>
+            <h4>Need Help?</h4>
+          </div>
+          <div className="help-items">
+            <div className="help-item">
+              <span className="help-bullet">•</span>
+              <span className="help-text">
+                <strong>New employees:</strong> Choose "New Employee Assessment" to get started with a fresh assessment.
+              </span>
+            </div>
+            <div className="help-item">
+              <span className="help-bullet">•</span>
+              <span className="help-text">
+                <strong>Returning employees:</strong> Use your previously assigned Employee ID to continue where you left off.
+              </span>
+            </div>
+            <div className="help-item">
+              <span className="help-bullet">•</span>
+              <span className="help-text">
+                <strong>Lost your ID?</strong> Contact your system administrator or start a new assessment.
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderNewEmployeeConfirmation = () => (
+    <div className="employee-session-manager">
+      <div className="glass-card">
         <div className="session-card">
           <div className="session-header">
-            <div className="session-icon">👋</div>
-            <h3>Welcome Back!</h3>
-            <p>Enter your Employee ID to continue where you left off</p>
+            <div className="session-icon">✨</div>
+            <h3>Start New Employee Assessment</h3>
+            <p>You're about to begin a new employee assessment. A unique Employee ID will be assigned to you.</p>
+          </div>
+
+          {error && (
+            <div className="input-error">
+              <span className="error-icon">⚠️</span>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div className="session-actions">
+            <button
+              className="btn btn-secondary"
+              onClick={() => setSessionMode(null)}
+              disabled={loading}
+            >
+              ← Back to Options
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleNewEmployeeStart}
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <div className="loading-spinner small"></div>
+                  <span>Starting...</span>
+                </>
+              ) : (
+                <>
+                  <span>🚀</span>
+                  <span>Start Assessment</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderReturningEmployeeForm = () => (
+    <div className="employee-session-manager">
+      <div className="glass-card">
+        <div className="session-card">
+          <div className="session-header">
+            <div className="session-icon">🔄</div>
+            <h3>Continue Previous Assessment</h3>
+            <p>Enter your Employee ID to resume your assessment where you left off.</p>
           </div>
 
           <div className="employee-id-input-section">
@@ -99,175 +242,106 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                 type="number"
                 id="employeeId"
                 value={employeeId}
-                onChange={(e) => setEmployeeId(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder="e.g., 0, 1, 2..."
-                className={`employee-id-input ${validationError ? 'error' : ''}`}
-                min="0"
+                onChange={(e) => {
+                  setEmployeeId(e.target.value);
+                  setError('');
+                }}
+                className={`employee-id-input ${error ? 'error' : ''}`}
+                placeholder="Enter your Employee ID (e.g., 1001)"
+                min="1"
                 disabled={loading}
-                autoFocus
               />
-              {validationError && (
-                <div className="input-error">
-                  <span className="error-icon">⚠️</span>
-                  {validationError}
-                </div>
-              )}
             </div>
             
+            {error && (
+              <div className="input-error">
+                <span className="error-icon">⚠️</span>
+                <span>{error}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Show existing employee IDs if available */}
+          {companyStatus.employeeIds && companyStatus.employeeIds.length > 0 && (
             <div className="employee-id-help">
-              {companyStatus.employeeIds && companyStatus.employeeIds.length > 0 ? (
-                <div className="existing-employees">
-                  <div className="help-icon">📋</div>
-                  <div>
-                    <strong>Existing employees for this company:</strong>
-                    <div className="employee-ids">
-                      {companyStatus.employeeIds.map(id => (
-                        <span 
-                          key={id} 
-                          className={`employee-id-chip ${parseInt(employeeId) === id ? 'selected' : ''}`}
-                          onClick={() => handleEmployeeIdChipClick(id)}
-                        >
-                          #{id}
-                        </span>
-                      ))}
-                    </div>
+              <div className="existing-employees">
+                <span className="help-icon">📋</span>
+                <div>
+                  <strong>Existing Employee IDs for this company:</strong>
+                  <div className="employee-ids">
+                    {companyStatus.employeeIds.map(id => (
+                      <span
+                        key={id}
+                        className={`employee-id-chip ${selectedEmployeeId === id ? 'selected' : ''}`}
+                        onClick={() => handleEmployeeIdSelect(id)}
+                      >
+                        #{id}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--neutral-600)', marginTop: 'var(--spacing-2)' }}>
+                    Click on an ID to select it, or enter your ID manually above.
                   </div>
                 </div>
-              ) : (
-                <div className="no-employees">
-                  <div className="help-icon">ℹ️</div>
-                  <p>No employees have started assessments for this company yet.</p>
-                </div>
-              )}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Show message if no existing employees */}
+          {(!companyStatus.employeeIds || companyStatus.employeeIds.length === 0) && (
+            <div className="employee-id-help">
+              <div className="no-employees">
+                <span className="help-icon">ℹ️</span>
+                <div>
+                  <strong>No existing employee assessments found</strong>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--neutral-600)', marginTop: 'var(--spacing-2)' }}>
+                    If you believe you have a previous assessment, double-check your Employee ID. 
+                    Otherwise, consider starting a new assessment.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="session-actions">
             <button
-              onClick={handleEmployeeIdSubmit}
+              className="btn btn-secondary"
+              onClick={() => setSessionMode(null)}
+              disabled={loading}
+            >
+              ← Back to Options
+            </button>
+            <button
               className="btn btn-primary"
-              disabled={loading || !employeeId.trim() || !!validationError}
+              onClick={handleReturningEmployeeStart}
+              disabled={loading || !employeeId.trim()}
             >
               {loading ? (
                 <>
-                  <span className="loading-spinner small"></span>
-                  Loading...
+                  <div className="loading-spinner small"></div>
+                  <span>Loading...</span>
                 </>
               ) : (
                 <>
-                  <span className="btn-icon">▶️</span>
-                  Continue Assessment
+                  <span>🔄</span>
+                  <span>Continue Assessment</span>
                 </>
               )}
             </button>
-            <button
-              onClick={handleBackToSelection}
-              className="btn btn-secondary"
-              disabled={loading}
-            >
-              <span className="btn-icon">⬅️</span>
-              Back
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="employee-session-manager">
-      <div className="session-intro">
-        <div className="intro-icon">🚀</div>
-        <h3>Employee Assessment Setup</h3>
-        <p>Are you starting a new assessment or continuing a previous one?</p>
-        
-        {companyStatus.employeeCount > 0 && (
-          <div className="company-stats">
-            <div className="stat-item">
-              <div className="stat-icon">👥</div>
-              <span className="stat-number">{companyStatus.employeeCount}</span>
-              <span className="stat-label">Employee{companyStatus.employeeCount === 1 ? '' : 's'} Assessed</span>
-            </div>
-            <div className="stat-item">
-              <div className="stat-icon">🆔</div>
-              <span className="stat-number">{companyStatus.nextEmployeeId || 0}</span>
-              <span className="stat-label">Next Employee ID</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="session-options">
-        <div className="session-option new-employee" onClick={handleNewEmployee}>
-          <div className="option-icon">
-            <div className="icon-circle new">
-              🆕
-            </div>
-          </div>
-          <div className="option-content">
-            <h4>New Employee</h4>
-            <p>Start a fresh assessment with a new employee ID</p>
-            <div className="option-details">
-              <span className="option-badge new">
-                🎯 You'll be Employee #{companyStatus.nextEmployeeId || 0}
-              </span>
-            </div>
-          </div>
-          <div className="option-arrow">
-            <span className="arrow-icon">→</span>
-          </div>
-        </div>
-
-        <div className="session-option returning-employee" onClick={handleReturningEmployee}>
-          <div className="option-icon">
-            <div className="icon-circle returning">
-              🔄
-            </div>
-          </div>
-          <div className="option-content">
-            <h4>Returning Employee</h4>
-            <p>Continue your partially completed assessment</p>
-            <div className="option-details">
-              <span className="option-badge returning">
-                📋 Resume where you left off
-              </span>
-            </div>
-          </div>
-          <div className="option-arrow">
-            <span className="arrow-icon">→</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="session-help">
-        <div className="help-header">
-          <span className="help-icon">💡</span>
-          <h4>Quick Guide</h4>
-        </div>
-        <div className="help-items">
-          <div className="help-item">
-            <span className="help-bullet">🆕</span>
-            <div className="help-text">
-              <strong>New Employee:</strong> Choose this if you haven't started an assessment before. You'll receive a unique employee ID automatically.
-            </div>
-          </div>
-          <div className="help-item">
-            <span className="help-bullet">🔄</span>
-            <div className="help-text">
-              <strong>Returning Employee:</strong> Choose this to continue a partially completed assessment using your existing employee ID.
-            </div>
-          </div>
-          <div className="help-item">
-            <span className="help-bullet">💾</span>
-            <div className="help-text">
-              <strong>Auto-Save:</strong> Your progress is automatically saved as you complete each question.
-            </div>
           </div>
         </div>
       </div>
     </div>
   );
+
+  // Render based on current session mode
+  if (sessionMode === 'new') {
+    return renderNewEmployeeConfirmation();
+  } else if (sessionMode === 'returning') {
+    return renderReturningEmployeeForm();
+  } else {
+    return renderSessionModeSelection();
+  }
 };
 
 export default EmployeeSessionManager;
