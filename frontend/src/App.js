@@ -31,9 +31,10 @@ function App() {
   const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
   const [sessionInitialized, setSessionInitialized] = useState(false);
 
-  // ENHANCED: Company modification tracking
+  // CRITICAL FIX: Company modification tracking
   const [companyCanModify, setCompanyCanModify] = useState(true);
   const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed', 'read_only'
+  const [isInitialLoad, setIsInitialLoad] = useState(true); // Track if this is the first load
 
   const tabs = [
     { id: 'company', label: 'Company Assessment', icon: '🏢' },
@@ -67,6 +68,7 @@ function App() {
       // Reset company state
       setCompanyFormState('loading');
       setCompanyCanModify(true);
+      setIsInitialLoad(true); // Mark as initial load
     } else {
       // Clear everything if no company ID
       setCompanyStatus({ 
@@ -78,6 +80,7 @@ function App() {
         completionPercentage: 0
       });
       setCompanyFormState('new');
+      setIsInitialLoad(true);
     }
   }, [companyId]);
 
@@ -112,7 +115,7 @@ function App() {
     setLoading(false);
   };
 
-  // ENHANCED: Better company status checking with proper state management
+  // CRITICAL FIX: Better company status checking with proper completion logic
   const checkCompanyStatus = async () => {
     if (!companyId) return;
     
@@ -134,36 +137,45 @@ function App() {
           completionPercentage: status.completionPercentage || 0
         });
 
-        // FIXED: Determine company form state based on backend response
-        if (status.companyCompleted && status.completionPercentage === 100) {
-          // Company is fully completed - allow viewing but warn about modifications
+        // CRITICAL FIX: Proper form state determination
+        const hasAnyResponses = status.completionPercentage > 0;
+        const isFullyComplete = status.completionPercentage === 100 && status.companyCompleted;
+        
+        if (isFullyComplete) {
+          // Only mark as completed if it's actually 100% complete
           setCompanyFormState('completed');
-          setCompanyCanModify(true); // Allow modifications but with warnings
+          setCompanyCanModify(true); // Still allow modifications with warning
           console.log('Company form is completed but can be modified');
-        } else if (status.companyInProgress || status.completionPercentage > 0) {
-          // Company assessment is in progress - fully editable
+        } else if (hasAnyResponses) {
+          // Has some responses but not complete
           setCompanyFormState('in_progress');
           setCompanyCanModify(true);
           console.log('Company form is in progress and editable');
           
-          // Load existing responses if available
-          await loadCompanyResponses();
+          // Load existing responses if this is initial load
+          if (isInitialLoad) {
+            await loadCompanyResponses();
+          }
         } else {
-          // New company assessment
+          // No responses yet
           setCompanyFormState('new');
           setCompanyCanModify(true);
           console.log('New company form - fully editable');
         }
         
+        setIsInitialLoad(false); // Mark initial load as complete
+        
       } else {
         console.error('Failed to check company status:', response.status);
         setCompanyFormState('new');
         setCompanyCanModify(true);
+        setIsInitialLoad(false);
       }
     } catch (error) {
       console.error('Error checking company status:', error);
       setCompanyFormState('new');
       setCompanyCanModify(true);
+      setIsInitialLoad(false);
     }
   };
 
@@ -205,7 +217,7 @@ function App() {
     }
   };
 
-  // ENHANCED: Enhanced saveResponse function with better company logic and S3 file support
+  // CRITICAL FIX: Enhanced saveResponse function with proper completion logic
   const saveResponse = async (questionId, answer, file = null) => {
     // CRITICAL FIX: Don't allow saving if employee session not properly initialized
     if (activeTab === 'employee' && !sessionInitialized) {
@@ -232,7 +244,10 @@ function App() {
         companyId,
         formType: activeTab,
         responses: newResponses,
-        lastModified: new Date().toISOString()
+        lastModified: new Date().toISOString(),
+        // CRITICAL FIX: Don't send completion signals on single question saves
+        preventAutoComplete: true, // New flag to prevent premature completion
+        singleQuestionUpdate: true // Flag to indicate this is just a single question update
       };
 
       // ENHANCED: Include file metadata if present
@@ -260,9 +275,24 @@ function App() {
           throw new Error('Employee session not properly initialized');
         }
       } else {
-        // ENHANCED: Company form handling
+        // CRITICAL FIX: Company form handling with proper completion logic
         payload.allowModification = companyCanModify;
         payload.formState = companyFormState;
+        
+        // CRITICAL FIX: Only check for completion if explicitly requested
+        const totalQuestions = questions.length;
+        const answeredQuestions = Object.keys(newResponses).filter(key => 
+          newResponses[key] && newResponses[key].trim() !== ''
+        ).length;
+        
+        // Only consider it complete if ALL questions are answered AND user explicitly submits
+        if (totalQuestions > 0 && answeredQuestions === totalQuestions) {
+          payload.potentiallyComplete = true; // Flag for backend to check
+        } else {
+          payload.inProgress = true; // Explicitly mark as in progress
+        }
+        
+        console.log(`Company save: ${answeredQuestions}/${totalQuestions} questions answered`);
       }
 
       const response = await fetch(`${API_BASE_URL}/responses`, {
@@ -283,12 +313,13 @@ function App() {
             setCompanyCanModify(false);
             setSaveStatus('error');
             return;
-          } else if (errorData.error.includes('already completed')) {
-            // Handle completion status - but still allow modifications with warning
-            if (activeTab === 'company') {
+          } else if (errorData.error.includes('already completed') && activeTab === 'company') {
+            // CRITICAL FIX: Only show this if it's actually completed, not in progress
+            if (errorData.actuallyComplete === true) {
+              alert('Company questionnaire has been fully completed. You can still modify responses, but changes will update the last modified date.');
               setCompanyFormState('completed');
-              // Don't block the save, just update status
             }
+            // Don't block the save - allow modifications
           } else {
             throw new Error(errorData.error);
           }
@@ -299,7 +330,7 @@ function App() {
 
       const responseData = await response.json();
       
-      // ENHANCED: Handle completion status updates
+      // ENHANCED: Handle completion status updates properly
       if (activeTab === 'company') {
         // Update company status based on response
         if (responseData.completionPercentage !== undefined) {
@@ -312,11 +343,13 @@ function App() {
           }));
         }
         
-        // Update form state
-        if (responseData.completionPercentage === 100) {
+        // CRITICAL FIX: Only update form state if backend explicitly says it's complete
+        if (responseData.explicitlyComplete === true) {
           setCompanyFormState('completed');
-        } else {
+          console.log('Company form marked as explicitly complete by backend');
+        } else if (responseData.completionPercentage > 0) {
           setCompanyFormState('in_progress');
+          console.log('Company form is in progress');
         }
       }
 
@@ -351,10 +384,14 @@ function App() {
 
   // ENHANCED: Better tab change handling
   const handleTabChange = (tabId) => {
-    // ENHANCED: Improved company completion check
-    if (tabId === 'company' && !companyCanModify && companyFormState === 'read_only') {
-      alert('Company questionnaire is in read-only mode. Please contact an administrator to make changes.');
-      return;
+    // CRITICAL FIX: Only prevent tab change if company is actually fully completed AND user hasn't confirmed
+    if (tabId === 'company' && companyFormState === 'completed') {
+      const proceed = window.confirm(
+        'Company questionnaire has been completed. Do you want to review or modify responses?'
+      );
+      if (!proceed) {
+        return;
+      }
     }
     
     console.log(`Switching to tab: ${tabId}`);
@@ -393,6 +430,7 @@ function App() {
     resetEmployeeSession();
     setQuestions([]);
     setResponses({});
+    setIsInitialLoad(true); // Reset initial load flag
     
     // If we're on company tab, set ready immediately
     if (activeTab === 'company') {
@@ -454,7 +492,7 @@ function App() {
     );
   };
 
-  // ENHANCED: Company status indicator
+  // ENHANCED: Company status indicator with better logic
   const renderCompanyStatusIndicator = () => {
     if (!companyId || companyFormState === 'loading') return null;
 
