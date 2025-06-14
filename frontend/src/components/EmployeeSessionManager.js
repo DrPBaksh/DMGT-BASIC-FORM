@@ -36,10 +36,19 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
       return;
     }
 
-    // FIXED: Validate employee ID format - accept 0 and positive numbers
-    const numericId = parseInt(employeeId.trim());
-    if (isNaN(numericId) || numericId < 0) {
-      setError('Employee ID must be a valid number (0 or greater)');
+    // FIXED: Enhanced validation to explicitly accept 0 as valid Employee ID
+    const trimmedId = employeeId.trim();
+    const numericId = parseInt(trimmedId);
+    
+    // Check if it's a valid number (including 0) and not negative
+    if (isNaN(numericId) || numericId < 0 || !Number.isInteger(numericId)) {
+      setError('Employee ID must be a valid whole number (0, 1, 2, etc.)');
+      return;
+    }
+
+    // Additional check: ensure the input doesn't contain decimals
+    if (trimmedId.includes('.') || trimmedId.includes(',')) {
+      setError('Employee ID must be a whole number (no decimals)');
       return;
     }
 
@@ -47,12 +56,13 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
     setError('');
     
     try {
+      console.log(`Attempting to load returning employee with ID: ${numericId} (type: ${typeof numericId})`);
       // Try to load returning employee session
       await onSessionSetup('returning', numericId);
-      console.log(`Returning employee session loaded for ID: ${numericId}`);
+      console.log(`Successfully loaded returning employee session for ID: ${numericId}`);
     } catch (error) {
       console.error('Error loading returning employee session:', error);
-      setError('Failed to load employee session. Please check your Employee ID and try again.');
+      setError(`Failed to load employee session for ID ${numericId}. Please check your Employee ID and try again.`);
       setLoading(false);
     }
   };
@@ -160,7 +170,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
             <div className="help-item">
               <span className="help-bullet">•</span>
               <span className="help-text">
-                <strong>Returning employees:</strong> Use your previously assigned Employee ID (including 0) to continue where you left off.
+                <strong>Returning employees:</strong> Use your previously assigned Employee ID (including 0, 1, 2, etc.) to continue where you left off.
               </span>
             </div>
             <div className="help-item">
@@ -249,6 +259,7 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                 className={`employee-id-input ${error ? 'error' : ''}`}
                 placeholder="Enter your Employee ID (e.g., 0, 1, 2...)"
                 min="0"
+                step="1"
                 disabled={loading}
               />
             </div>
@@ -259,6 +270,14 @@ const EmployeeSessionManager = ({ companyId, companyStatus, onSessionSetup }) =>
                 <span>{error}</span>
               </div>
             )}
+            
+            {/* ENHANCED: Better help text for Employee ID validation */}
+            <div className="input-help">
+              <span className="help-icon">ℹ️</span>
+              <span className="help-text">
+                Employee IDs are whole numbers starting from 0. Valid examples: 0, 1, 2, 15, 100, etc.
+              </span>
+            </div>
           </div>
 
           {/* Show existing employee IDs if available */}
