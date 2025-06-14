@@ -32,6 +32,23 @@ const FormRenderer = ({
     questions: groupedQuestions[sectionName].sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
   }));
 
+  // FIXED: Create proper sequential question numbering
+  const createQuestionMapping = () => {
+    const mapping = {};
+    let sequentialNumber = 1;
+    
+    sections.forEach(section => {
+      section.questions.forEach(question => {
+        mapping[question.QuestionID] = sequentialNumber;
+        sequentialNumber++;
+      });
+    });
+    
+    return mapping;
+  };
+
+  const questionNumberMapping = createQuestionMapping();
+
   // Track answered questions
   useEffect(() => {
     const answered = new Set(Object.keys(responses).filter(key => responses[key] !== ''));
@@ -43,7 +60,7 @@ const FormRenderer = ({
     onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
-  // ENHANCED: Better file handling with employee session awareness
+  // ENHANCED: Better file handling with employee session awareness and proper upload logic
   const handleInputChange = (questionId, value, file = null) => {
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
@@ -51,13 +68,37 @@ const FormRenderer = ({
       return;
     }
 
-    onResponseChange(questionId, value, file);
-    
+    // FIXED: Enhanced file upload handling
     if (file) {
+      console.log(`File uploaded for question ${questionId}:`, file.name, file.size, file.type);
+      
+      // Store file info locally for display
       setUploadedFiles(prev => ({
         ...prev,
-        [questionId]: file.name
+        [questionId]: {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          uploadedAt: new Date().toISOString()
+        }
       }));
+
+      // Create a payload that includes both the answer and file metadata
+      const fileMetadata = {
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type,
+        uploadedAt: new Date().toISOString()
+      };
+
+      // Combine text answer with file metadata
+      const combinedValue = value ? `${value} [FILE: ${file.name}]` : `[FILE: ${file.name}]`;
+      
+      console.log(`Saving response with file metadata:`, { value: combinedValue, file: fileMetadata });
+      onResponseChange(questionId, combinedValue, fileMetadata);
+    } else {
+      // Regular response without file
+      onResponseChange(questionId, value, null);
     }
   };
 
@@ -77,12 +118,36 @@ const FormRenderer = ({
     return isRequired && !hasResponse;
   };
 
+  // FIXED: Enhanced file retrieval logic for returning users
+  const getUploadedFileInfo = (questionId) => {
+    // Check if response contains file information
+    const response = responses[questionId];
+    if (response && response.includes('[FILE:')) {
+      const fileMatch = response.match(/\[FILE: (.+?)\]/);
+      if (fileMatch) {
+        return {
+          name: fileMatch[1],
+          fromSavedResponse: true
+        };
+      }
+    }
+    
+    // Check local uploaded files
+    return uploadedFiles[questionId] || null;
+  };
+
   const renderQuestion = (question, questionIndex, sectionIndex) => {
     const value = responses[question.QuestionID] || '';
     const isRequired = question.Required === 'true';
     const allowFileUpload = question.AllowFileUpload === 'true';
     const isAnswered = answeredQuestions.has(question.QuestionID);
     const isIncomplete = isQuestionIncomplete(question);
+    
+    // FIXED: Use sequential numbering instead of QuestionOrder
+    const displayNumber = questionNumberMapping[question.QuestionID] || questionIndex + 1;
+    
+    // Get file info for display
+    const fileInfo = getUploadedFileInfo(question.QuestionID);
 
     return (
       <div 
@@ -95,7 +160,7 @@ const FormRenderer = ({
             {isRequired && <span className="question-required"> *</span>}
           </div>
           <div className="question-badges">
-            <div className="question-number">{question.QuestionOrder}</div>
+            <div className="question-number">{displayNumber}</div>
             {isAnswered && <div className="answered-badge">✓</div>}
             {isIncomplete && <div className="required-badge">!</div>}
           </div>
@@ -114,19 +179,43 @@ const FormRenderer = ({
               onChange={(e) => {
                 const file = e.target.files[0];
                 if (file) {
-                  handleInputChange(question.QuestionID, value, file);
+                  // FIXED: Better file size validation
+                  const maxSize = 10 * 1024 * 1024; // 10MB
+                  if (file.size > maxSize) {
+                    alert('File size must be less than 10MB');
+                    return;
+                  }
+                  
+                  // Get current text value and combine with file
+                  const currentValue = responses[question.QuestionID] || '';
+                  const textValue = currentValue.replace(/\s*\[FILE:.*?\]\s*/, '').trim();
+                  handleInputChange(question.QuestionID, textValue, file);
                 }
               }}
+              accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.xlsx,.xls,.ppt,.pptx"
             />
             <label htmlFor={`file-${question.QuestionID}`} className="file-upload-button">
               📎 Upload Supporting Document
             </label>
             <div className="file-upload-text">
-              Optional: Upload any relevant documents to support your answer
+              Optional: Upload any relevant documents to support your answer (Max 10MB)
             </div>
-            {uploadedFiles[question.QuestionID] && (
+            
+            {/* ENHANCED: Better file display for both new uploads and retrieved files */}
+            {fileInfo && (
               <div className="uploaded-file">
-                ✅ Uploaded: {uploadedFiles[question.QuestionID]}
+                <div className="file-info">
+                  <span className="file-status">
+                    {fileInfo.fromSavedResponse ? '📁' : '✅'} 
+                  </span>
+                  <span className="file-name">{fileInfo.name}</span>
+                  {fileInfo.size && (
+                    <span className="file-size">({(fileInfo.size / 1024).toFixed(1)} KB)</span>
+                  )}
+                  {fileInfo.fromSavedResponse && (
+                    <span className="file-note">(Previously uploaded)</span>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -145,6 +234,9 @@ const FormRenderer = ({
 
   const renderInputField = (question, value) => {
     const { QuestionType, QuestionTypeDetails } = question;
+    
+    // FIXED: Clean up value to remove file metadata for display in input fields
+    const cleanValue = value ? value.replace(/\s*\[FILE:.*?\]\s*/, '').trim() : '';
 
     switch (QuestionType) {
       case 'text':
@@ -153,7 +245,7 @@ const FormRenderer = ({
         return (
           <input
             type={QuestionType}
-            value={value}
+            value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
             className="input-field"
             placeholder={`Enter your ${QuestionType}...`}
@@ -163,7 +255,7 @@ const FormRenderer = ({
       case 'textarea':
         return (
           <textarea
-            value={value}
+            value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
             className="input-field textarea-field"
             placeholder="Please provide your detailed response..."
@@ -175,7 +267,7 @@ const FormRenderer = ({
         return (
           <input
             type="number"
-            value={value}
+            value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
             className="input-field"
             placeholder="Enter a number..."
@@ -186,7 +278,7 @@ const FormRenderer = ({
         return (
           <input
             type="date"
-            value={value}
+            value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
             className="input-field"
           />
@@ -197,12 +289,12 @@ const FormRenderer = ({
         return (
           <div className="choice-options">
             {singleOptions.map((option, index) => (
-              <label key={index} className={`choice-option ${value === option ? 'selected' : ''}`}>
+              <label key={index} className={`choice-option ${cleanValue === option ? 'selected' : ''}`}>
                 <input
                   type="radio"
                   name={question.QuestionID}
                   value={option}
-                  checked={value === option}
+                  checked={cleanValue === option}
                   onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
                   className="choice-input"
                 />
@@ -215,7 +307,7 @@ const FormRenderer = ({
 
       case 'multiple-choice':
         const multipleOptions = QuestionTypeDetails ? QuestionTypeDetails.split('|') : [];
-        const selectedValues = typeof value === 'string' ? value.split(',').filter(v => v) : [];
+        const selectedValues = typeof cleanValue === 'string' ? cleanValue.split(',').filter(v => v) : [];
         
         return (
           <div className="choice-options">
@@ -254,7 +346,7 @@ const FormRenderer = ({
               type="range"
               min={min}
               max={max}
-              value={value || min}
+              value={cleanValue || min}
               onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
               className="slider-input"
             />
@@ -263,7 +355,7 @@ const FormRenderer = ({
               <span>{max}</span>
             </div>
             <div className="slider-value">
-              Current value: <strong>{value || min}</strong>
+              Current value: <strong>{cleanValue || min}</strong>
             </div>
           </div>
         );
@@ -277,7 +369,7 @@ const FormRenderer = ({
                 <button
                   key={rating}
                   type="button"
-                  className={`rating-star ${Number(value) >= rating ? 'active' : ''}`}
+                  className={`rating-star ${Number(cleanValue) >= rating ? 'active' : ''}`}
                   onClick={() => handleInputChange(question.QuestionID, rating.toString())}
                 >
                   ⭐
@@ -285,7 +377,7 @@ const FormRenderer = ({
               ))}
             </div>
             <div className="rating-label">
-              {value ? `${value}/${ratingMax}` : 'Not rated'}
+              {cleanValue ? `${cleanValue}/${ratingMax}` : 'Not rated'}
             </div>
           </div>
         );
@@ -294,12 +386,12 @@ const FormRenderer = ({
         return (
           <div className="choice-options yes-no-options">
             {['Yes', 'No'].map((option) => (
-              <label key={option} className={`choice-option choice-yn ${value === option ? 'selected' : ''} ${option.toLowerCase()}`}>
+              <label key={option} className={`choice-option choice-yn ${cleanValue === option ? 'selected' : ''} ${option.toLowerCase()}`}>
                 <input
                   type="radio"
                   name={question.QuestionID}
                   value={option}
-                  checked={value === option}
+                  checked={cleanValue === option}
                   onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
                   className="choice-input"
                 />
@@ -315,7 +407,7 @@ const FormRenderer = ({
         return (
           <input
             type="text"
-            value={value}
+            value={cleanValue}
             onChange={(e) => handleInputChange(question.QuestionID, e.target.value)}
             className="input-field"
             placeholder="Enter your response..."
@@ -375,7 +467,7 @@ const FormRenderer = ({
         <div className="form-title">
           <h2>
             {formType === 'company' ? '🏢 Company Assessment' : '👤 Employee Assessment'}
-            {formType === 'employee' && employeeId && (
+            {formType === 'employee' && employeeId !== null && (
               <span className="employee-id-indicator">#{employeeId}</span>
             )}
           </h2>
