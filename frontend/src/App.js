@@ -1,733 +1,1127 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
-import './enhanced-upload.css'; // Import enhanced file upload styles
-import FormRenderer from './components/FormRenderer';
-import TabNavigation from './components/TabNavigation';
-import Logo from './components/Logo';
-import ProgressBar from './components/ProgressBar';
-import EmployeeSessionManager from './components/EmployeeSessionManager';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://hfrcfsq0v6.execute-api.eu-west-2.amazonaws.com/dev';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('company');
+  // Main state management
+  const [currentView, setCurrentView] = useState('home');
   const [companyId, setCompanyId] = useState('');
-  const [questions, setQuestions] = useState([]);
+  const [currentEmployeeId, setCurrentEmployeeId] = useState('');
+  const [returnEmployeeId, setReturnEmployeeId] = useState('');
+  
+  // Status and data states
+  const [companyStatus, setCompanyStatus] = useState(null);
+  const [employeeList, setEmployeeList] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [companyStatus, setCompanyStatus] = useState({ 
-    companyCompleted: false, 
-    companyInProgress: false,
-    employeeCount: 0, 
-    employeeIds: [],
-    lastModified: null,
-    completionPercentage: 0
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  
+  // Form data states
+  const [companyFormData, setCompanyFormData] = useState({
+    section1: { companyName: '', industry: '', employees: '', revenue: '' },
+    section2: { address: '', phone: '', email: '', website: '' },
+    section3: { description: '', established: '', goals: '', challenges: '' }
   });
-  
-  // FIXED: Separate state management for company vs employee responses
-  const [companyResponses, setCompanyResponses] = useState({});
-  const [employeeResponses, setEmployeeResponses] = useState({});
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [saveStatus, setSaveStatus] = useState(''); // 'saving', 'saved', 'error'
-  
-  // Employee Session Management
-  const [employeeSessionMode, setEmployeeSessionMode] = useState(null); // 'new' or 'returning'
-  const [currentEmployeeId, setCurrentEmployeeId] = useState(null);
-  const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
-  const [sessionInitialized, setSessionInitialized] = useState(false);
 
-  // FIXED: Company form state management
-  const [companyCanModify, setCompanyCanModify] = useState(true);
-  const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed'
-  const [isInitialLoad, setIsInitialLoad] = useState(true);
-  const [unsavedCompanyChanges, setUnsavedCompanyChanges] = useState(false);
+  const [employeeFormData, setEmployeeFormData] = useState({
+    section1: { firstName: '', lastName: '', position: '', department: '' },
+    section2: { email: '', phone: '', startDate: '', salary: '' },
+    section3: { skills: '', experience: '', notes: '', goals: '' }
+  });
 
-  const tabs = [
-    { id: 'company', label: 'Company Assessment', icon: '🏢' },
-    { id: 'employee', label: 'Employee Assessment', icon: '👤' }
-  ];
+  // Current form section tracking
+  const [companySection, setCompanySection] = useState(1);
+  const [employeeSection, setEmployeeSection] = useState(1);
 
-  // Load questions based on active tab
+  // Clear messages after delay
   useEffect(() => {
-    const shouldLoadQuestions = () => {
-      if (!companyId || !activeTab) return false;
-      
-      if (activeTab === 'company') return true;
-      if (activeTab === 'employee' && employeeSessionReady && sessionInitialized) return true;
-      
-      return false;
-    };
-
-    if (shouldLoadQuestions()) {
-      loadQuestions();
-      if (activeTab === 'company') {
-        checkCompanyStatus();
-      }
+    if (error || success) {
+      const timer = setTimeout(() => {
+        setError('');
+        setSuccess('');
+      }, 5000);
+      return () => clearTimeout(timer);
     }
-  }, [activeTab, companyId, employeeSessionReady, sessionInitialized]);
+  }, [error, success]);
 
-  // Reset session state when company ID changes
-  useEffect(() => {
-    if (companyId) {
-      resetEmployeeSession();
-      checkCompanyStatus();
-      setCompanyFormState('loading');
-      setCompanyCanModify(true);
-      setIsInitialLoad(true);
-      setUnsavedCompanyChanges(false);
-    } else {
-      setCompanyStatus({ 
-        companyCompleted: false, 
-        companyInProgress: false,
-        employeeCount: 0, 
-        employeeIds: [],
-        lastModified: null,
-        completionPercentage: 0
+  // Generate unique employee ID
+  const generateId = () => {
+    return 'EMP-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
+  };
+
+  // Enhanced API call with better error handling
+  const apiCall = async (endpoint, options = {}) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...options.headers
+        },
+        ...options
       });
-      setCompanyFormState('new');
-      setIsInitialLoad(true);
-      setUnsavedCompanyChanges(false);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return await response.json();
+      }
+      
+      return await response.text();
+    } catch (error) {
+      console.error('API Error:', error);
+      throw new Error(`API Error: ${error.message}`);
+    }
+  };
+
+  // Check company status with enhanced error handling
+  const checkCompanyStatus = useCallback(async () => {
+    if (!companyId.trim()) {
+      setCompanyStatus(null);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError('');
+      
+      // Use the correct API structure based on actual backend
+      const data = await apiCall(`/responses/company-status/${encodeURIComponent(companyId)}`);
+      
+      setCompanyStatus(data.status || 'not-started');
+      
+      if (data.formData) {
+        setCompanyFormData(data.formData);
+      }
+      
+    } catch (error) {
+      console.error('Error checking company status:', error);
+      setCompanyStatus('not-started');
+    } finally {
+      setLoading(false);
     }
   }, [companyId]);
 
-  const resetEmployeeSession = () => {
-    setEmployeeSessionMode(null);
-    setCurrentEmployeeId(null);
-    setEmployeeSessionReady(false);
-    setSessionInitialized(false);
-    setEmployeeResponses({});
-    setSaveStatus('');
-    console.log('Employee session reset');
-  };
+  // Load employee list with enhanced error handling
+  const loadEmployeeList = useCallback(async () => {
+    if (!companyId.trim()) {
+      setEmployeeList([]);
+      return;
+    }
 
-  const loadQuestions = async () => {
-    setLoading(true);
-    console.log(`Loading questions for activeTab: ${activeTab}, companyId: ${companyId}`);
-    
     try {
-      const response = await fetch(`${API_BASE_URL}/config/${activeTab}`);
-      if (response.ok) {
-        const data = await response.json();
-        setQuestions(data);
-        console.log(`Loaded ${data.length} questions for ${activeTab}`);
+      const data = await apiCall(`/responses/employee-list/${encodeURIComponent(companyId)}`);
+      setEmployeeList(data.employees || []);
+    } catch (error) {
+      console.error('Error loading employee list:', error);
+      setEmployeeList([]);
+    }
+  }, [companyId]);
+
+  // Effect for company status checking
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (companyId.trim()) {
+        checkCompanyStatus();
+        loadEmployeeList();
       } else {
-        console.error('Failed to load questions:', response.status);
-        alert('Failed to load questions. Please check your connection and try again.');
+        setCompanyStatus(null);
+        setEmployeeList([]);
       }
-    } catch (error) {
-      console.error('Error loading questions:', error);
-      alert('Error loading questions. Please check your connection and try again.');
+    }, 300); // Debounce API calls
+
+    return () => clearTimeout(timeoutId);
+  }, [companyId, checkCompanyStatus, loadEmployeeList]);
+
+  // FIXED: Company form now only saves when Save button is clicked - no auto-save
+  const saveCompanyForm = async () => {
+    if (!companyId.trim()) {
+      setError('Please enter a Company ID first');
+      return;
     }
-    setLoading(false);
+
+    try {
+      setLoading(true);
+      setError('');
+      
+      // Save entire company form at once
+      const payload = {
+        companyId: companyId.trim(),
+        formType: 'company',
+        responses: companyFormData,
+        timestamp: new Date().toISOString(),
+        lastUpdated: new Date().toISOString()
+      };
+
+      await apiCall('/responses', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      setSuccess('Company form saved successfully!');
+      setCompanyStatus('completed');
+      
+    } catch (error) {
+      setError(`Failed to save company data: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Company status checking
-  const checkCompanyStatus = async () => {
-    if (!companyId) return;
-    
-    try {
-      setCompanyFormState('loading');
-      const response = await fetch(`${API_BASE_URL}/responses?companyId=${companyId}`);
-      
-      if (response.ok) {
-        const status = await response.json();
-        console.log('Company status received:', status);
-        
-        setCompanyStatus({
-          companyCompleted: status.companyCompleted || false,
-          companyInProgress: status.companyInProgress || false,
-          employeeCount: status.employeeCount || 0,
-          employeeIds: status.employeeIds || [],
-          lastModified: status.lastModified || null,
-          completionPercentage: status.completionPercentage || 0
-        });
+  // Save employee section with enhanced feedback
+  const saveEmployeeSection = async () => {
+    if (!companyId.trim() || !currentEmployeeId) {
+      setError('Missing company ID or employee ID');
+      return;
+    }
 
-        const hasAnyResponses = status.completionPercentage > 0;
-        const isFullyComplete = status.completionPercentage === 100 && status.companyCompleted;
-        
-        if (isFullyComplete) {
-          setCompanyFormState('completed');
-          setCompanyCanModify(true);
-          console.log('Company form is completed but can be modified');
-        } else if (hasAnyResponses) {
-          setCompanyFormState('in_progress');
-          setCompanyCanModify(true);
-          console.log('Company form is in progress and editable');
-          
-          if (isInitialLoad) {
-            await loadCompanyResponses();
-          }
-        } else {
-          setCompanyFormState('new');
-          setCompanyCanModify(true);
-          console.log('New company form - fully editable');
-        }
-        
-        setIsInitialLoad(false);
-        
+    try {
+      setLoading(true);
+      setError('');
+      
+      const sectionData = {
+        ...employeeFormData,
+        currentSection: employeeSection,
+        isCompleted: employeeSection === 3,
+        lastSaved: new Date().toISOString(),
+        companyId: companyId.trim()
+      };
+
+      await apiCall('/responses/save-employee', {
+        method: 'POST',
+        body: JSON.stringify({
+          companyId: companyId.trim(),
+          employeeId: currentEmployeeId,
+          formData: sectionData,
+          section: employeeSection
+        })
+      });
+
+      if (employeeSection === 3) {
+        setSuccess('Employee form completed successfully!');
+        setCurrentView('home');
+        loadEmployeeList();
       } else {
-        console.error('Failed to check company status:', response.status);
-        setCompanyFormState('new');
-        setCompanyCanModify(true);
-        setIsInitialLoad(false);
+        setSuccess(`Section ${employeeSection} saved successfully!`);
+        setEmployeeSection(employeeSection + 1);
       }
-    } catch (error) {
-      console.error('Error checking company status:', error);
-      setCompanyFormState('new');
-      setCompanyCanModify(true);
-      setIsInitialLoad(false);
-    }
-  };
-
-  // Load existing company responses
-  const loadCompanyResponses = async () => {
-    try {
-      console.log(`Loading company responses for ID: ${companyId}`);
-      const response = await fetch(`${API_BASE_URL}/responses?action=getCompany&companyId=${companyId}`);
       
-      if (response.ok) {
-        const data = await response.json();
-        if (data.found && data.responses) {
-          setCompanyResponses(data.responses);
-          console.log('Company responses loaded:', data.responses);
-        }
-      }
     } catch (error) {
-      console.error('Error loading company responses:', error);
+      setError(`Failed to save employee data: ${error.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Load existing employee data
   const loadEmployeeData = async (employeeId) => {
     try {
-      console.log(`Loading employee data for ID: ${employeeId}`);
-      const response = await fetch(`${API_BASE_URL}/responses?action=getEmployee&companyId=${companyId}&employeeId=${employeeId}`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.found) {
-          setEmployeeResponses(data.responses || {});
-          setCurrentEmployeeId(employeeId);
-          console.log(`Employee data loaded for ID: ${employeeId}`, data.responses);
-          return data.employeeData;
-        }
+      setLoading(true);
+      const data = await apiCall(`/responses/employee-data/${encodeURIComponent(companyId)}/${encodeURIComponent(employeeId)}`);
+      
+      if (data.found) {
+        setEmployeeFormData(data.formData);
+        setEmployeeSection(data.formData.currentSection || 1);
+        return true;
       }
-      return null;
+      return false;
     } catch (error) {
       console.error('Error loading employee data:', error);
-      return null;
+      return false;
+    } finally {
+      setLoading(false);
     }
   };
 
-  // FIXED: Handle company responses locally without auto-saving
-  const handleCompanyResponse = (questionId, answer, file = null) => {
-    console.log(`Company response change: ${questionId} = ${answer}`);
+  // Start company form
+  const startCompanyForm = (mode) => {
+    setError('');
+    setSuccess('');
     
-    // Update local state
-    const newResponses = { ...companyResponses, [questionId]: answer };
-    setCompanyResponses(newResponses);
-    setUnsavedCompanyChanges(true);
-    
-    // Handle file metadata if present
-    if (file) {
-      console.log('File metadata for company response:', file);
-      // Store file metadata locally - will be sent when form is saved
-    }
-    
-    console.log('Company form updated locally (not saved yet)');
-  };
-
-  // FIXED: Save company form only when explicitly requested
-  const saveCompanyForm = async () => {
-    if (!companyId) {
-      alert('Please enter a Company ID first');
-      return;
-    }
-
-    if (!unsavedCompanyChanges && companyFormState !== 'new') {
-      alert('No changes to save');
-      return;
-    }
-
-    try {
-      setSaveStatus('saving');
-      
-      const payload = {
-        companyId,
-        formType: 'company',
-        responses: companyResponses,
-        lastModified: new Date().toISOString(),
-        explicitSave: true // Flag to indicate this is an explicit save
-      };
-
-      const response = await fetch(`${API_BASE_URL}/responses`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
+    if (mode === 'amend' && companyStatus === 'completed') {
+      setCompanySection(1);
+    } else if (mode === 'start') {
+      setCompanyFormData({
+        section1: { companyName: '', industry: '', employees: '', revenue: '' },
+        section2: { address: '', phone: '', email: '', website: '' },
+        section3: { description: '', established: '', goals: '', challenges: '' }
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-      }
-
-      const responseData = await response.json();
-      
-      // Update company status based on response
-      if (responseData.completionPercentage !== undefined) {
-        setCompanyStatus(prev => ({
-          ...prev,
-          completionPercentage: responseData.completionPercentage,
-          companyInProgress: responseData.completionPercentage > 0 && responseData.completionPercentage < 100,
-          companyCompleted: responseData.completionPercentage === 100,
-          lastModified: new Date().toISOString()
-        }));
-        
-        setCompanyFormState(responseData.completionPercentage === 100 ? 'completed' : 'in_progress');
-      }
-
-      setSaveStatus('saved');
-      setUnsavedCompanyChanges(false);
-      console.log('Company form saved successfully');
-      
-      setTimeout(() => setSaveStatus(''), 3000);
-
-    } catch (error) {
-      console.error('Error saving company form:', error);
-      setSaveStatus('error');
-      alert(`Error saving company form: ${error.message}`);
-      
-      setTimeout(() => setSaveStatus(''), 5000);
+      setCompanySection(1);
     }
+    setCurrentView('company-form');
   };
 
-  // FIXED: Handle employee responses with auto-save (existing behavior)
-  const handleEmployeeResponse = async (questionId, answer, file = null) => {
-    if (!sessionInitialized) {
-      console.warn('Attempted to save response before employee session was initialized');
-      return;
-    }
-
-    const newResponses = { ...employeeResponses, [questionId]: answer };
-    setEmployeeResponses(newResponses);
-    setSaveStatus('saving');
-
-    try {
-      const payload = {
-        companyId,
-        formType: 'employee',
-        responses: newResponses,
-        lastModified: new Date().toISOString(),
-        preventAutoComplete: true,
-        singleQuestionUpdate: true
-      };
-
-      if (file) {
-        payload.fileMetadata = {
-          questionId,
-          ...file
-        };
-      }
-
-      if (employeeSessionMode === 'returning' && currentEmployeeId !== null) {
-        payload.employeeId = currentEmployeeId;
-      } else if (employeeSessionMode === 'new') {
-        if (currentEmployeeId !== null) {
-          payload.employeeId = currentEmployeeId;
-        } else {
-          payload.isNewEmployee = true;
-        }
-      } else {
-        throw new Error('Employee session not properly initialized');
-      }
-
-      const response = await fetch(`${API_BASE_URL}/responses`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-      }
-
-      const responseData = await response.json();
-      
-      // Capture employee ID for new employees
-      if (employeeSessionMode === 'new' && 
-          currentEmployeeId === null && 
-          responseData.employeeId !== undefined) {
-        
-        setCurrentEmployeeId(responseData.employeeId);
-        console.log(`New employee ID assigned: ${responseData.employeeId}`);
-        await checkCompanyStatus();
-      }
-
-      setSaveStatus('saved');
-      console.log('Employee response saved successfully');
-      
-      setTimeout(() => setSaveStatus(''), 3000);
-
-    } catch (error) {
-      console.error('Error saving employee response:', error);
-      setSaveStatus('error');
-      alert(`Error saving response: ${error.message}`);
-      
-      setTimeout(() => setSaveStatus(''), 5000);
-    }
-  };
-
-  // Tab change handling
-  const handleTabChange = (tabId) => {
-    if (tabId === 'company' && unsavedCompanyChanges) {
-      const proceed = window.confirm(
-        'You have unsaved changes in the company form. Do you want to continue without saving?'
-      );
-      if (!proceed) {
-        return;
-      }
-    }
-    
-    console.log(`Switching to tab: ${tabId}`);
-    setActiveTab(tabId);
-    setCurrentQuestionIndex(0);
-    setSaveStatus('');
-    
-    if (tabId === 'employee') {
-      setQuestions([]);
-      if (!sessionInitialized) {
-        resetEmployeeSession();
-      }
-    } else {
-      // Company tab
-      setEmployeeSessionReady(true);
-      setSessionInitialized(true);
-      if (companyFormState === 'in_progress' || companyFormState === 'completed') {
-        loadCompanyResponses();
-      }
-    }
-  };
-
-  const handleCompanyIdChange = (e) => {
-    const newCompanyId = e.target.value;
-    
-    if (unsavedCompanyChanges) {
-      const proceed = window.confirm(
-        'You have unsaved changes in the company form. Do you want to continue without saving?'
-      );
-      if (!proceed) {
-        return;
-      }
-    }
-    
-    setCompanyId(newCompanyId);
-    console.log(`Company ID changed to: ${newCompanyId}`);
-    
-    resetEmployeeSession();
-    setQuestions([]);
-    setCompanyResponses({});
-    setEmployeeResponses({});
-    setIsInitialLoad(true);
-    setUnsavedCompanyChanges(false);
-    
-    if (activeTab === 'company') {
-      setEmployeeSessionReady(true);
-      setSessionInitialized(true);
-    }
-  };
-
-  const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
-    console.log(`Setting up employee session: mode=${mode}, employeeId=${employeeId}`);
-    
-    setEmployeeSessionMode(mode);
-    setSaveStatus('');
+  // Start employee form
+  const startEmployeeForm = (mode) => {
+    setError('');
+    setSuccess('');
     
     if (mode === 'new') {
-      setCurrentEmployeeId(null);
-      setEmployeeResponses({});
-      setEmployeeSessionReady(true);
-      setSessionInitialized(true);
-      console.log('New employee session initialized and ready');
-      
-    } else if (mode === 'returning' && employeeId !== null) {
-      console.log(`Loading returning employee data for ID: ${employeeId}`);
-      const employeeData = await loadEmployeeData(employeeId);
-      if (employeeData) {
-        setEmployeeSessionReady(true);
-        setSessionInitialized(true);
-        console.log(`Returning employee session loaded for ID: ${employeeId}`);
-      } else {
-        alert(`No employee found with ID ${employeeId}. Please check your Employee ID or start as a new employee.`);
-        resetEmployeeSession();
-      }
+      const newId = generateId();
+      setCurrentEmployeeId(newId);
+      setEmployeeFormData({
+        section1: { firstName: '', lastName: '', position: '', department: '' },
+        section2: { email: '', phone: '', startDate: '', salary: '' },
+        section3: { skills: '', experience: '', notes: '', goals: '' }
+      });
+      setEmployeeSection(1);
+      setCurrentView('employee-form');
     }
   };
 
-  const calculateProgress = () => {
-    if (questions.length === 0) return 0;
-    const currentResponses = activeTab === 'company' ? companyResponses : employeeResponses;
-    const answeredQuestions = Object.keys(currentResponses).length;
-    return (answeredQuestions / questions.length) * 100;
+  // Continue returning employee form
+  const continueEmployeeForm = async () => {
+    if (!returnEmployeeId.trim()) {
+      setError('Please enter your Employee ID');
+      return;
+    }
+
+    const success = await loadEmployeeData(returnEmployeeId.trim());
+    if (success) {
+      setCurrentEmployeeId(returnEmployeeId.trim());
+      setCurrentView('employee-form');
+    } else {
+      setError('Employee ID not found. Please check your ID or start a new form.');
+    }
   };
 
-  // Save status indicator
-  const renderSaveStatus = () => {
-    if (!saveStatus) return null;
-    
-    const statusConfig = {
-      saving: { icon: '💾', text: 'Saving...', class: 'save-status saving' },
-      saved: { icon: '✅', text: 'Saved', class: 'save-status saved' },
-      error: { icon: '❌', text: 'Save failed', class: 'save-status error' }
-    };
-    
-    const config = statusConfig[saveStatus];
+  // Enhanced Message Component
+  const MessageDisplay = () => {
+    if (!error && !success) return null;
+
     return (
-      <div className={config.class}>
-        <span className="save-icon">{config.icon}</span>
-        <span className="save-text">{config.text}</span>
+      <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg max-w-md ${
+        error ? 'bg-red-100 border border-red-400 text-red-700' : 'bg-green-100 border border-green-400 text-green-700'
+      }`}>
+        <div className="flex items-center">
+          <span className="mr-2 text-lg">
+            {error ? '⚠️' : '✅'}
+          </span>
+          <p className="font-medium">{error || success}</p>
+        </div>
       </div>
     );
   };
 
-  // Company status indicator
-  const renderCompanyStatusIndicator = () => {
-    if (!companyId || companyFormState === 'loading') return null;
+  // Enhanced Home View with better UX
+  const HomeView = () => (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="container mx-auto px-6 py-12">
+        <div className="text-center mb-12">
+          <h1 className="text-5xl font-bold text-gray-900 mb-6">
+            Data & AI Readiness Assessment 2025
+          </h1>
+          <p className="text-xl text-gray-600 max-w-4xl mx-auto leading-relaxed">
+            Comprehensive evaluation of your organization's preparedness for the data-driven future
+          </p>
+        </div>
 
-    const getStatusMessage = () => {
-      switch (companyFormState) {
-        case 'new':
-          return { icon: '🆕', text: 'New Assessment', class: 'status-new' };
-        case 'in_progress':
-          return { 
-            icon: '📝', 
-            text: `In Progress (${companyStatus.completionPercentage}% complete)`, 
-            class: 'status-in-progress' 
-          };
-        case 'completed':
-          return { 
-            icon: '✅', 
-            text: `Completed ${companyStatus.lastModified ? new Date(companyStatus.lastModified).toLocaleDateString() : ''}`, 
-            class: 'status-completed' 
-          };
-        default:
-          return null;
-      }
-    };
-
-    const statusInfo = getStatusMessage();
-    if (!statusInfo) return null;
-
-    return (
-      <div className={`company-status-indicator ${statusInfo.class}`}>
-        <span className="status-icon">{statusInfo.icon}</span>
-        <span className="status-text">{statusInfo.text}</span>
-        {unsavedCompanyChanges && (
-          <span className="unsaved-notice">
-            (You have unsaved changes)
-          </span>
-        )}
-        {companyFormState === 'completed' && !unsavedCompanyChanges && (
-          <span className="modification-notice">
-            (Can be modified)
-          </span>
-        )}
-      </div>
-    );
-  };
-
-  const renderEmployeeSection = () => {
-    console.log(`Rendering employee section - sessionReady: ${employeeSessionReady}, initialized: ${sessionInitialized}, mode: ${employeeSessionMode}`);
-    
-    if (!employeeSessionReady || !sessionInitialized) {
-      return (
-        <EmployeeSessionManager
-          companyId={companyId}
-          companyStatus={companyStatus}
-          onSessionSetup={handleEmployeeSessionSetup}
-        />
-      );
-    }
-
-    return (
-      <>
-        <div className="employee-session-info">
-          <div className="session-badge">
-            {employeeSessionMode === 'new' ? (
-              <span className="badge badge-new">
-                ✨ New Employee Assessment
-                {currentEmployeeId !== null && ` - ID: #${currentEmployeeId}`}
-              </span>
-            ) : (
-              <span className="badge badge-returning">
-                🔄 Returning Employee #{currentEmployeeId}
-              </span>
-            )}
+        <div className="bg-white rounded-3xl shadow-2xl p-10 mb-8 max-w-4xl mx-auto">
+          <div className="flex items-center mb-8">
+            <div className="w-16 h-16 bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl flex items-center justify-center mr-6 shadow-lg">
+              <span className="text-white text-2xl">🏢</span>
+            </div>
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 mb-2">Company Management</h2>
+              <p className="text-gray-600 text-lg">Enter your unique company identifier to begin the assessment</p>
+            </div>
           </div>
-          {renderSaveStatus()}
-        </div>
-
-        <ProgressBar 
-          progress={calculateProgress()}
-          currentQuestion={currentQuestionIndex + 1}
-          totalQuestions={questions.length}
-        />
-
-        <div className="form-container">
-          <div className="glass-card">
-            {loading ? (
-              <div className="loading-state">
-                <div className="loading-spinner"></div>
-                <p>Loading questions...</p>
-              </div>
-            ) : questions.length > 0 ? (
-              <FormRenderer
-                questions={questions}
-                responses={employeeResponses}
-                onResponseChange={handleEmployeeResponse}
-                onQuestionChange={setCurrentQuestionIndex}
-                companyId={companyId}
-                formType={activeTab}
-                employeeId={currentEmployeeId}
-                employeeMode={employeeSessionMode}
-                sessionInitialized={sessionInitialized}
-              />
-            ) : (
-              <div className="empty-state">
-                <p>No questions available for this form type.</p>
-                <p>Please ensure you have a valid Company ID and try refreshing the page.</p>
-              </div>
-            )}
+          
+          <div className="mb-8">
+            <label className="block text-sm font-semibold text-gray-700 mb-3">
+              Company ID <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={companyId}
+              onChange={(e) => setCompanyId(e.target.value)}
+              onFocus={() => setError('')}
+              className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200 bg-gray-50 focus:bg-white"
+              placeholder="Enter your company ID (e.g., DMGT-001)"
+              autoComplete="organization"
+            />
+            <p className="text-sm text-gray-500 mt-2">
+              This ID will be used to track and manage all company and employee forms
+            </p>
           </div>
-        </div>
-      </>
-    );
-  };
 
-  return (
-    <div className="app">
-      <header className="app-header">
-        <Logo />
-        <div className="header-content">
-          <h1>Data & AI Readiness Assessment 2025</h1>
-          <p className="subtitle">Evaluate your organization's preparedness for the data-driven future</p>
-        </div>
-      </header>
-
-      <main className="app-main">
-        <div className="container">
-          {/* Company ID Section */}
-          <div className="company-id-section">
-            <div className="glass-card">
-              <div className="company-id-header">
-                <h2>🏢 Company Identification</h2>
-                <p>Enter your assigned Company ID to begin the assessment</p>
-              </div>
-              <div className="company-id-input-group">
-                <label htmlFor="companyId" className="company-id-label">
-                  Company ID <span className="required">*</span>
-                </label>
-                <input
-                  type="text"
-                  id="companyId"
-                  value={companyId}
-                  onChange={handleCompanyIdChange}
-                  placeholder="Enter your assigned Company ID"
-                  className="company-id-input"
-                  required
-                />
-                {renderCompanyStatusIndicator()}
-                {companyStatus.employeeCount > 0 && (
-                  <div className="employee-summary">
-                    👥 {companyStatus.employeeCount} employee(s) have completed assessments
+          {companyId.trim() && (
+            <div className="bg-gradient-to-r from-gray-50 to-blue-50 rounded-2xl p-8 border border-gray-200">
+              {loading ? (
+                <div className="text-center py-8">
+                  <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mx-auto"></div>
+                  <p className="mt-4 text-gray-600 font-medium">Checking company status...</p>
+                </div>
+              ) : (
+                <>
+                  <CompanyStatusDisplay status={companyStatus} />
+                  <div className="flex flex-wrap gap-4 mt-8">
+                    {companyStatus === 'completed' && (
+                      <button
+                        onClick={() => startCompanyForm('amend')}
+                        className="flex items-center px-8 py-4 bg-gradient-to-r from-yellow-600 to-yellow-700 text-white rounded-xl hover:from-yellow-700 hover:to-yellow-800 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-1 font-semibold"
+                      >
+                        <span className="mr-3 text-lg">📝</span>
+                        Amend Company Form
+                      </button>
+                    )}
+                    {companyStatus !== 'completed' && (
+                      <button
+                        onClick={() => startCompanyForm('start')}
+                        className="flex items-center px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-1 font-semibold"
+                      >
+                        <span className="mr-3 text-lg">▶️</span>
+                        {companyStatus === 'in-progress' ? 'Continue Company Form' : 'Start Company Form'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setCurrentView('employee-list')}
+                      className="flex items-center px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-xl hover:from-green-700 hover:to-green-800 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-1 font-semibold"
+                    >
+                      <span className="mr-3 text-lg">👥</span>
+                      Employee Forms
+                    </button>
                   </div>
-                )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // Enhanced Company Status Display
+  const CompanyStatusDisplay = ({ status }) => {
+    const statusConfig = {
+      'not-started': { 
+        icon: '🆕', 
+        text: 'Ready to Start', 
+        subtext: 'No form data found for this company ID',
+        bgColor: 'bg-gradient-to-r from-gray-100 to-gray-200', 
+        textColor: 'text-gray-700',
+        iconBg: 'bg-gray-500'
+      },
+      'in-progress': { 
+        icon: '📝', 
+        text: 'Form In Progress', 
+        subtext: 'Company form started but not yet completed',
+        bgColor: 'bg-gradient-to-r from-yellow-100 to-orange-100', 
+        textColor: 'text-yellow-800',
+        iconBg: 'bg-yellow-500'
+      },
+      'completed': { 
+        icon: '✅', 
+        text: 'Form Completed', 
+        subtext: 'Company assessment successfully submitted',
+        bgColor: 'bg-gradient-to-r from-green-100 to-emerald-100', 
+        textColor: 'text-green-800',
+        iconBg: 'bg-green-500'
+      }
+    };
+
+    const config = statusConfig[status] || statusConfig['not-started'];
+
+    return (
+      <div className={`flex items-center p-6 rounded-2xl ${config.bgColor} border border-opacity-30`}>
+        <div className={`w-14 h-14 ${config.iconBg} rounded-xl flex items-center justify-center mr-6 shadow-md`}>
+          <span className="text-white text-2xl">{config.icon}</span>
+        </div>
+        <div>
+          <p className={`font-bold text-xl ${config.textColor} mb-1`}>Company Form Status</p>
+          <p className={`${config.textColor} font-semibold text-lg`}>{config.text}</p>
+          <p className={`${config.textColor} opacity-80 text-sm`}>{config.subtext}</p>
+        </div>
+      </div>
+    );
+  };
+
+  // Enhanced Employee List View
+  const EmployeeListView = () => (
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100">
+      <div className="container mx-auto px-6 py-12">
+        <div className="mb-8">
+          <button
+            onClick={() => setCurrentView('home')}
+            className="flex items-center text-gray-600 hover:text-gray-900 mb-6 transition-colors font-medium text-lg"
+          >
+            <span className="mr-3 text-xl">←</span>
+            Back to Home
+          </button>
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Employee Forms</h1>
+          <p className="text-gray-600 text-lg">Company ID: <span className="font-semibold">{companyId}</span></p>
+        </div>
+
+        <div className="bg-white rounded-3xl shadow-2xl p-10">
+          <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center mb-10">
+            <h2 className="text-3xl font-bold mb-6 lg:mb-0 text-gray-900">Employee Management</h2>
+            <button
+              onClick={() => startEmployeeForm('new')}
+              className="flex items-center px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-1 font-semibold"
+            >
+              <span className="mr-3 text-lg">➕</span>
+              Start New Employee Form
+            </button>
+          </div>
+
+          {employeeList.length > 0 && (
+            <div className="mb-10">
+              <h3 className="text-2xl font-semibold mb-6 text-gray-900">Previous Employee Forms</h3>
+              <div className="grid gap-6">
+                {employeeList.map(employee => (
+                  <div key={employee.id} className="border-2 border-gray-200 rounded-2xl p-6 flex justify-between items-center hover:shadow-lg transition-shadow bg-gradient-to-r from-gray-50 to-blue-50">
+                    <div>
+                      <p className="font-bold text-lg text-gray-900">Employee ID: {employee.id}</p>
+                      <p className="text-gray-700 font-medium">{employee.name || 'Name not provided'}</p>
+                      <p className="text-gray-600 mt-2">
+                        Status: <span className={`font-semibold ${employee.completed ? 'text-green-600' : 'text-yellow-600'}`}>
+                          {employee.completed ? 'Completed' : 'In Progress'}
+                        </span>
+                        {employee.lastSaved && (
+                          <span className="text-gray-500 ml-2">
+                            • Last saved: {new Date(employee.lastSaved).toLocaleDateString()}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    {employee.completed && (
+                      <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center">
+                        <span className="text-white text-2xl">✅</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="border-t-2 border-gray-200 pt-10">
+            <h3 className="text-2xl font-semibold mb-6 text-gray-900">Continue Previous Form</h3>
+            <p className="text-gray-600 mb-6 text-lg">
+              If you have started a form and need to continue, enter your Employee ID below:
+            </p>
+            <div className="flex gap-4 max-w-2xl">
+              <input
+                type="text"
+                value={returnEmployeeId}
+                onChange={(e) => setReturnEmployeeId(e.target.value)}
+                placeholder="Enter your Employee ID"
+                className="flex-1 px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+              />
+              <button
+                onClick={continueEmployeeForm}
+                className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-xl hover:from-green-700 hover:to-green-800 transition-all duration-200 shadow-lg hover:shadow-xl font-semibold"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Company Form View - FIXED: Single save button, no auto-save
+  const CompanyFormView = () => (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="container mx-auto px-6 py-12">
+        <div className="mb-8">
+          <button
+            onClick={() => setCurrentView('home')}
+            className="flex items-center text-gray-600 hover:text-gray-900 mb-6 transition-colors font-medium text-lg"
+          >
+            <span className="mr-3 text-xl">←</span>
+            Back to Home
+          </button>
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Company Information Form</h1>
+          <p className="text-gray-600 text-lg">Company ID: <span className="font-semibold">{companyId}</span></p>
+        </div>
+
+        <div className="bg-white rounded-3xl shadow-2xl p-10 max-w-5xl mx-auto">
+          {/* All sections in one form */}
+          <div className="space-y-12">
+            {/* Section 1: Basic Company Information */}
+            <div className="space-y-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-8">Basic Company Information</h3>
+              <div className="grid md:grid-cols-2 gap-8">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Company Name *</label>
+                  <input
+                    type="text"
+                    value={companyFormData.section1.companyName}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section1: { ...companyFormData.section1, companyName: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="Enter company name"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Industry *</label>
+                  <input
+                    type="text"
+                    value={companyFormData.section1.industry}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section1: { ...companyFormData.section1, industry: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="e.g., Technology, Healthcare"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Number of Employees *</label>
+                  <select
+                    value={companyFormData.section1.employees}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section1: { ...companyFormData.section1, employees: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                  >
+                    <option value="">Select range</option>
+                    <option value="1-10">1-10</option>
+                    <option value="11-50">11-50</option>
+                    <option value="51-200">51-200</option>
+                    <option value="201-1000">201-1000</option>
+                    <option value="1000+">1000+</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Annual Revenue</label>
+                  <select
+                    value={companyFormData.section1.revenue}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section1: { ...companyFormData.section1, revenue: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                  >
+                    <option value="">Select range</option>
+                    <option value="Under £1M">Under £1M</option>
+                    <option value="£1M-£10M">£1M-£10M</option>
+                    <option value="£10M-£100M">£10M-£100M</option>
+                    <option value="£100M-£1B">£100M-£1B</option>
+                    <option value="Over £1B">Over £1B</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Contact Information */}
+            <div className="space-y-8 border-t pt-12">
+              <h3 className="text-2xl font-bold text-gray-900 mb-8">Contact Information</h3>
+              <div className="space-y-8">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Company Address *</label>
+                  <textarea
+                    value={companyFormData.section2.address}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section2: { ...companyFormData.section2, address: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="Enter full company address"
+                  />
+                </div>
+                <div className="grid md:grid-cols-2 gap-8">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Phone Number</label>
+                    <input
+                      type="tel"
+                      value={companyFormData.section2.phone}
+                      onChange={(e) => setCompanyFormData({
+                        ...companyFormData,
+                        section2: { ...companyFormData.section2, phone: e.target.value }
+                      })}
+                      className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                      placeholder="+44 20 1234 5678"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Email Address *</label>
+                    <input
+                      type="email"
+                      value={companyFormData.section2.email}
+                      onChange={(e) => setCompanyFormData({
+                        ...companyFormData,
+                        section2: { ...companyFormData.section2, email: e.target.value }
+                      })}
+                      className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                      placeholder="contact@company.com"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Website</label>
+                  <input
+                    type="url"
+                    value={companyFormData.section2.website}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section2: { ...companyFormData.section2, website: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="https://www.company.com"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 3: Additional Details */}
+            <div className="space-y-8 border-t pt-12">
+              <h3 className="text-2xl font-bold text-gray-900 mb-8">Additional Details</h3>
+              <div className="space-y-8">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Company Description *</label>
+                  <textarea
+                    value={companyFormData.section3.description}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section3: { ...companyFormData.section3, description: e.target.value }
+                    })}
+                    rows="5"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="Describe your company's main business activities..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Year Established</label>
+                  <input
+                    type="number"
+                    value={companyFormData.section3.established}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section3: { ...companyFormData.section3, established: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="e.g., 2020"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Data & AI Goals</label>
+                  <textarea
+                    value={companyFormData.section3.goals}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section3: { ...companyFormData.section3, goals: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="What are your data and AI objectives?"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Current Challenges</label>
+                  <textarea
+                    value={companyFormData.section3.challenges}
+                    onChange={(e) => setCompanyFormData({
+                      ...companyFormData,
+                      section3: { ...companyFormData.section3, challenges: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 text-lg transition-all duration-200"
+                    placeholder="What challenges do you face with data and AI?"
+                  />
+                </div>
+                
+                {/* FIXED: Document upload for company form */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Supporting Documents (Optional)</label>
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6">
+                    <input
+                      type="file"
+                      id="company-file-upload"
+                      multiple
+                      accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx"
+                      onChange={async (e) => {
+                        const files = Array.from(e.target.files);
+                        if (files.length > 0) {
+                          try {
+                            setLoading(true);
+                            for (const file of files) {
+                              const formData = new FormData();
+                              formData.append('file', file);
+                              formData.append('companyId', companyId);
+                              formData.append('formType', 'company');
+                              
+                              const uploadResponse = await fetch(`${API_BASE_URL}/upload`, {
+                                method: 'POST',
+                                body: formData
+                              });
+                              
+                              if (uploadResponse.ok) {
+                                setSuccess(`File "${file.name}" uploaded successfully to S3`);
+                              } else {
+                                throw new Error(`Upload failed for ${file.name}`);
+                              }
+                            }
+                          } catch (error) {
+                            setError(`File upload failed: ${error.message}`);
+                          } finally {
+                            setLoading(false);
+                          }
+                        }
+                      }}
+                      className="hidden"
+                    />
+                    <label htmlFor="company-file-upload" className="cursor-pointer block text-center">
+                      <div className="text-4xl text-gray-400 mb-2">📎</div>
+                      <p className="text-gray-600 font-medium">Click to upload supporting documents</p>
+                      <p className="text-sm text-gray-500 mt-1">PDF, DOC, Excel, PowerPoint files (Max 10MB each)</p>
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          {companyId && (
-            <>
-              <TabNavigation
-                tabs={tabs}
-                activeTab={activeTab}
-                onTabChange={handleTabChange}
-              />
-
-              {activeTab === 'company' && (
+          {/* FIXED: Single Save Button for entire form */}
+          <div className="mt-12 pt-8 border-t-2 border-gray-200">
+            <button
+              onClick={saveCompanyForm}
+              disabled={loading}
+              className="w-full flex items-center justify-center px-8 py-5 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-xl font-bold shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+            >
+              {loading ? (
                 <>
-                  <div className="form-header">
-                    {renderSaveStatus()}
-                    {/* FIXED: Add explicit Save button for company form */}
-                    <div className="company-form-actions">
-                      <button
-                        onClick={saveCompanyForm}
-                        disabled={loading || saveStatus === 'saving'}
-                        className={`btn btn-primary save-company-btn ${unsavedCompanyChanges ? 'has-changes' : ''}`}
-                      >
-                        {saveStatus === 'saving' ? (
-                          <>
-                            <span className="btn-spinner">💾</span>
-                            Saving...
-                          </>
-                        ) : (
-                          <>
-                            <span className="btn-icon">💾</span>
-                            {unsavedCompanyChanges ? 'Save Changes' : 'Save Company Form'}
-                          </>
-                        )}
-                      </button>
-                      {unsavedCompanyChanges && (
-                        <span className="unsaved-indicator">
-                          You have unsaved changes
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <ProgressBar 
-                    progress={calculateProgress()}
-                    currentQuestion={currentQuestionIndex + 1}
-                    totalQuestions={questions.length}
-                  />
-
-                  <div className="form-container">
-                    <div className="glass-card">
-                      {loading ? (
-                        <div className="loading-state">
-                          <div className="loading-spinner"></div>
-                          <p>Loading questions...</p>
-                        </div>
-                      ) : questions.length > 0 ? (
-                        <FormRenderer
-                          questions={questions}
-                          responses={companyResponses}
-                          onResponseChange={handleCompanyResponse}
-                          onQuestionChange={setCurrentQuestionIndex}
-                          companyId={companyId}
-                          formType={activeTab}
-                        />
-                      ) : (
-                        <div className="empty-state">
-                          <p>No questions available for this form type.</p>
-                          <p>Please ensure you have a valid Company ID and try refreshing the page.</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <div className="animate-spin rounded-full h-6 w-6 border-3 border-white border-t-transparent mr-3"></div>
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <span className="mr-3 text-xl">💾</span>
+                  Save Company Form
                 </>
               )}
-
-              {activeTab === 'employee' && renderEmployeeSection()}
-            </>
-          )}
+            </button>
+          </div>
         </div>
-      </main>
+      </div>
+    </div>
+  );
 
-      <footer className="app-footer">
-        <p>&copy; 2025 DMGT. All rights reserved. | Data & AI Readiness Assessment</p>
-      </footer>
+  // Employee Form View (keep existing - only one section saves at a time)
+  const EmployeeFormView = () => (
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100">
+      <div className="container mx-auto px-6 py-12">
+        <div className="mb-8">
+          <button
+            onClick={() => setCurrentView('employee-list')}
+            className="flex items-center text-gray-600 hover:text-gray-900 mb-6 transition-colors font-medium text-lg"
+          >
+            <span className="mr-3 text-xl">←</span>
+            Back to Employee List
+          </button>
+          <h1 className="text-4xl font-bold text-gray-900 mb-4">Employee Information Form</h1>
+          
+          <div className="bg-gradient-to-r from-blue-100 to-green-100 border-2 border-blue-200 rounded-2xl p-6 mt-6 max-w-2xl shadow-lg">
+            <p className="text-blue-800 font-bold text-lg">Your Employee ID: {currentEmployeeId}</p>
+            <p className="text-blue-600 mt-2">Please save this ID to continue your form later if needed.</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-3xl shadow-2xl p-10 max-w-5xl mx-auto">
+          {/* Progress Indicator */}
+          <div className="mb-10">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-gray-900">Section {employeeSection} of 3</h2>
+              <div className="flex space-x-3">
+                {[1, 2, 3].map(step => (
+                  <div
+                    key={step}
+                    className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg transition-all duration-300 ${
+                      step <= employeeSection 
+                        ? 'bg-gradient-to-r from-green-600 to-green-700 text-white shadow-lg' 
+                        : 'bg-gray-200 text-gray-500'
+                    }`}
+                  >
+                    {step}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-4">
+              <div
+                className="bg-gradient-to-r from-green-600 to-green-700 h-4 rounded-full transition-all duration-500 shadow-sm"
+                style={{ width: `${(employeeSection / 3) * 100}%` }}
+              ></div>
+            </div>
+          </div>
+
+          {/* Form Sections */}
+          {employeeSection === 1 && (
+            <div className="space-y-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-8">Personal Information</h3>
+              <div className="grid md:grid-cols-2 gap-8">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">First Name *</label>
+                  <input
+                    type="text"
+                    value={employeeFormData.section1.firstName}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section1: { ...employeeFormData.section1, firstName: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="Enter first name"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Last Name *</label>
+                  <input
+                    type="text"
+                    value={employeeFormData.section1.lastName}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section1: { ...employeeFormData.section1, lastName: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="Enter last name"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Job Title *</label>
+                  <input
+                    type="text"
+                    value={employeeFormData.section1.position}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section1: { ...employeeFormData.section1, position: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="e.g., Software Engineer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Department *</label>
+                  <input
+                    type="text"
+                    value={employeeFormData.section1.department}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section1: { ...employeeFormData.section1, department: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="e.g., Engineering"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {employeeSection === 2 && (
+            <div className="space-y-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-8">Contact & Employment Details</h3>
+              <div className="grid md:grid-cols-2 gap-8">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Email Address *</label>
+                  <input
+                    type="email"
+                    value={employeeFormData.section2.email}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section2: { ...employeeFormData.section2, email: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="email@company.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Phone Number</label>
+                  <input
+                    type="tel"
+                    value={employeeFormData.section2.phone}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section2: { ...employeeFormData.section2, phone: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="+44 7xxx xxx xxx"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Start Date</label>
+                  <input
+                    type="date"
+                    value={employeeFormData.section2.startDate}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section2: { ...employeeFormData.section2, startDate: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Salary Range (Optional)</label>
+                  <select
+                    value={employeeFormData.section2.salary}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section2: { ...employeeFormData.section2, salary: e.target.value }
+                    })}
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                  >
+                    <option value="">Prefer not to say</option>
+                    <option value="Under £30k">Under £30k</option>
+                    <option value="£30k-£50k">£30k-£50k</option>
+                    <option value="£50k-£75k">£50k-£75k</option>
+                    <option value="£75k-£100k">£75k-£100k</option>
+                    <option value="Over £100k">Over £100k</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {employeeSection === 3 && (
+            <div className="space-y-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-8">Skills & Experience</h3>
+              <div className="space-y-8">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Key Skills *</label>
+                  <textarea
+                    value={employeeFormData.section3.skills}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section3: { ...employeeFormData.section3, skills: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="List your key skills and technologies..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Experience with Data/AI</label>
+                  <textarea
+                    value={employeeFormData.section3.experience}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section3: { ...employeeFormData.section3, experience: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="Describe your experience with data analysis, AI, or machine learning..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Professional Goals</label>
+                  <textarea
+                    value={employeeFormData.section3.goals}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section3: { ...employeeFormData.section3, goals: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="What are your career goals related to data and AI?"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Additional Notes</label>
+                  <textarea
+                    value={employeeFormData.section3.notes}
+                    onChange={(e) => setEmployeeFormData({
+                      ...employeeFormData,
+                      section3: { ...employeeFormData.section3, notes: e.target.value }
+                    })}
+                    rows="4"
+                    className="w-full px-6 py-4 border-2 border-gray-300 rounded-xl focus:ring-4 focus:ring-green-500/20 focus:border-green-500 text-lg transition-all duration-200"
+                    placeholder="Any additional information you'd like to share..."
+                  />
+                </div>
+
+                {/* FIXED: Document upload for employee form */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">Supporting Documents (Optional)</label>
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6">
+                    <input
+                      type="file"
+                      id="employee-file-upload"
+                      multiple
+                      accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx"
+                      onChange={async (e) => {
+                        const files = Array.from(e.target.files);
+                        if (files.length > 0) {
+                          try {
+                            setLoading(true);
+                            for (const file of files) {
+                              const formData = new FormData();
+                              formData.append('file', file);
+                              formData.append('companyId', companyId);
+                              formData.append('employeeId', currentEmployeeId);
+                              formData.append('formType', 'employee');
+                              
+                              const uploadResponse = await fetch(`${API_BASE_URL}/upload`, {
+                                method: 'POST',
+                                body: formData
+                              });
+                              
+                              if (uploadResponse.ok) {
+                                setSuccess(`File "${file.name}" uploaded successfully to S3`);
+                              } else {
+                                throw new Error(`Upload failed for ${file.name}`);
+                              }
+                            }
+                          } catch (error) {
+                            setError(`File upload failed: ${error.message}`);
+                          } finally {
+                            setLoading(false);
+                          }
+                        }
+                      }}
+                      className="hidden"
+                    />
+                    <label htmlFor="employee-file-upload" className="cursor-pointer block text-center">
+                      <div className="text-4xl text-gray-400 mb-2">📎</div>
+                      <p className="text-gray-600 font-medium">Click to upload supporting documents</p>
+                      <p className="text-sm text-gray-500 mt-1">PDF, DOC, Excel, PowerPoint files (Max 10MB each)</p>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Save Button */}
+          <div className="mt-12 pt-8 border-t-2 border-gray-200">
+            <button
+              onClick={saveEmployeeSection}
+              disabled={loading}
+              className="w-full flex items-center justify-center px-8 py-5 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-xl hover:from-green-700 hover:to-green-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-xl font-bold shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+            >
+              {loading ? (
+                <>
+                  <div className="animate-spin rounded-full h-6 w-6 border-3 border-white border-t-transparent mr-3"></div>
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <span className="mr-3 text-xl">💾</span>
+                  {employeeSection === 3 ? 'Complete & Save Form' : 'Save Progress & Continue'}
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Main render
+  return (
+    <div className="font-sans antialiased">
+      <MessageDisplay />
+      {currentView === 'home' && <HomeView />}
+      {currentView === 'company-form' && <CompanyFormView />}
+      {currentView === 'employee-list' && <EmployeeListView />}
+      {currentView === 'employee-form' && <EmployeeFormView />}
     </div>
   );
 }
