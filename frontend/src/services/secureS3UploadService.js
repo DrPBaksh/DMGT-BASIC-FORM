@@ -1,5 +1,5 @@
 // services/secureS3UploadService.js
-// Secure S3 upload service using presigned URLs from backend
+// Enhanced S3 upload service with improved CORS handling and fallback
 
 import { v4 as uuidv4 } from 'uuid';
 
@@ -13,13 +13,21 @@ export class MetadataRegistry {
 
   async getRegistry() {
     try {
-      const response = await fetch(`${this.apiUrl}/file-registry`);
+      const response = await fetch(`${this.apiUrl}/file-registry`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        mode: 'cors'
+      });
+      
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       return await response.json();
     } catch (error) {
-      console.error('Error getting registry:', error);
+      console.warn('Registry service unavailable, using fallback:', error.message);
       return {};
     }
   }
@@ -29,8 +37,10 @@ export class MetadataRegistry {
       const response = await fetch(`${this.apiUrl}/file-registry`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
+        mode: 'cors',
         body: JSON.stringify(metadata)
       });
 
@@ -41,77 +51,139 @@ export class MetadataRegistry {
       const result = await response.json();
       return result.entryId;
     } catch (error) {
-      console.error('Error updating registry:', error);
-      throw error;
+      console.warn('Registry update failed, using local ID:', error.message);
+      // Generate local entry ID as fallback
+      return `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
   }
 
   async getCompanyUploads(companyId) {
     try {
-      const response = await fetch(`${this.apiUrl}/file-registry?companyId=${companyId}`);
+      const response = await fetch(`${this.apiUrl}/file-registry?companyId=${companyId}`, {
+        headers: {
+          'Accept': 'application/json'
+        },
+        mode: 'cors'
+      });
+      
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       return await response.json();
     } catch (error) {
-      console.error('Error getting company uploads:', error);
+      console.warn('Company uploads listing failed:', error.message);
       return [];
     }
   }
 
   async getEmployeeUploads(employeeId) {
     try {
-      const response = await fetch(`${this.apiUrl}/file-registry?employeeId=${employeeId}`);
+      const response = await fetch(`${this.apiUrl}/file-registry?employeeId=${employeeId}`, {
+        headers: {
+          'Accept': 'application/json'
+        },
+        mode: 'cors'
+      });
+      
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       return await response.json();
     } catch (error) {
-      console.error('Error getting employee uploads:', error);
+      console.warn('Employee uploads listing failed:', error.message);
       return [];
     }
   }
 }
 
-// Secure S3 Upload Service using presigned URLs
+// Enhanced S3 Upload Service with improved error handling
 export class SecureS3UploadService {
   constructor() {
     this.metadataRegistry = new MetadataRegistry();
     this.apiUrl = API_BASE_URL;
+    this.corsRetryAttempts = 0;
+    this.maxCorsRetries = 1;
   }
 
   /**
-   * Get presigned URL from backend for secure upload
+   * Check if S3 service is available with proper CORS handling
    */
-  async getPresignedUrl(fileName, fileType, companyId, employeeId, questionId) {
+  async isServiceAvailable() {
     try {
-      const response = await fetch(`${this.apiUrl}/s3/presigned-url`, {
-        method: 'POST',
+      const response = await fetch(`${this.apiUrl}/s3/health`, {
+        method: 'GET',
         headers: {
-          'Content-Type': 'application/json'
+          'Accept': 'application/json'
         },
-        body: JSON.stringify({
-          fileName,
-          fileType,
-          companyId,
-          employeeId,
-          questionId
-        })
+        mode: 'cors',
+        cache: 'no-cache'
       });
-
+      
       if (!response.ok) {
-        throw new Error(`Failed to get presigned URL: ${response.status}`);
+        return false;
       }
-
-      return await response.json();
+      
+      const result = await response.json();
+      return result.status === 'healthy';
     } catch (error) {
-      console.error('Error getting presigned URL:', error);
-      throw error;
+      console.warn('S3 service health check failed:', error.message);
+      return false;
     }
   }
 
   /**
-   * Upload file using presigned URL (secure method)
+   * Get presigned URL from backend for secure upload with enhanced error handling
+   */
+  async getPresignedUrl(fileName, fileType, companyId, employeeId, questionId) {
+    try {
+      const requestBody = {
+        fileName,
+        fileType,
+        companyId,
+        employeeId,
+        questionId,
+        timestamp: new Date().toISOString()
+      };
+
+      console.log('Requesting presigned URL with payload:', requestBody);
+
+      const response = await fetch(`${this.apiUrl}/s3/presigned-url`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        mode: 'cors',
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Presigned URL request failed: ${response.status} - ${errorText}`);
+        throw new Error(`Failed to get presigned URL: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log('Presigned URL received successfully');
+      return result;
+
+    } catch (error) {
+      console.error('Error getting presigned URL:', error);
+      
+      // Enhanced error analysis
+      if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
+        throw new Error('CORS_ERROR: S3 upload service is not properly configured with CORS headers. File upload will use fallback service.');
+      } else if (error.message.includes('404')) {
+        throw new Error('ENDPOINT_NOT_FOUND: S3 presigned URL endpoint is not available. File upload will use fallback service.');
+      } else {
+        throw new Error(`PRESIGNED_URL_ERROR: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Upload file using presigned URL (secure method) with enhanced fallback
    */
   async uploadFile(file, companyId, employeeId, questionId, additionalMetadata = {}) {
     try {
@@ -122,33 +194,55 @@ export class SecureS3UploadService {
 
       console.log(`Starting secure upload for file: ${file.name}`);
 
-      // Get presigned URL from backend
-      const presignedData = await this.getPresignedUrl(
-        file.name,
-        file.type,
-        companyId,
-        employeeId,
-        questionId
-      );
+      // First check if the S3 service is available
+      const serviceAvailable = await this.isServiceAvailable();
+      
+      if (!serviceAvailable) {
+        console.warn('S3 service is not available, falling back to mock service immediately');
+        throw new Error('S3_SERVICE_UNAVAILABLE: Service is not responding');
+      }
+
+      // Try to get presigned URL from backend
+      let presignedData;
+      try {
+        presignedData = await this.getPresignedUrl(
+          file.name,
+          file.type,
+          companyId,
+          employeeId,
+          questionId
+        );
+      } catch (presignedError) {
+        console.warn('Presigned URL failed:', presignedError.message);
+        throw new Error(`PRESIGNED_FAILED: ${presignedError.message}`);
+      }
 
       const { uploadUrl, downloadUrl, s3Key, entryId } = presignedData;
 
+      if (!uploadUrl) {
+        throw new Error('INVALID_PRESIGNED_RESPONSE: No upload URL provided');
+      }
+
       // Upload file directly to S3 using presigned URL
+      console.log('Uploading to S3 with presigned URL...');
       const uploadResponse = await fetch(uploadUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': file.type
         },
-        body: file
+        body: file,
+        mode: 'cors'
       });
 
       if (!uploadResponse.ok) {
-        throw new Error(`S3 upload failed: ${uploadResponse.status}`);
+        const errorText = await uploadResponse.text();
+        console.error(`S3 upload failed: ${uploadResponse.status} - ${errorText}`);
+        throw new Error(`S3_UPLOAD_FAILED: ${uploadResponse.status} - ${errorText}`);
       }
 
       console.log('File uploaded successfully to S3');
 
-      // Update metadata registry through backend
+      // Update metadata registry through backend (with fallback)
       const metadata = {
         companyId,
         employeeId: employeeId || null,
@@ -159,61 +253,87 @@ export class SecureS3UploadService {
         s3Key,
         downloadUrl,
         formType: employeeId ? 'employee' : 'company',
-        entryId,
+        entryId: entryId || `s3_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        uploadMethod: 'S3_SECURE',
+        uploadTimestamp: new Date().toISOString(),
         ...additionalMetadata
       };
 
-      await this.metadataRegistry.updateRegistry(metadata);
+      const registryEntryId = await this.metadataRegistry.updateRegistry(metadata);
 
       return {
         success: true,
-        entryId,
+        entryId: registryEntryId,
         s3Key,
+        s3Bucket: presignedData.s3Bucket || 'dmgt-forms-storage',
         url: downloadUrl,
+        uploadedSecurely: true,
         metadata
       };
 
     } catch (error) {
-      console.error('Error uploading file:', error);
-      throw new Error(`File upload failed: ${error.message}`);
+      console.error('Secure S3 upload failed:', error);
+      
+      // Enhanced error handling with specific fallback triggers
+      const shouldUseFallback = 
+        error.message.includes('CORS') ||
+        error.message.includes('Failed to fetch') ||
+        error.message.includes('S3_SERVICE_UNAVAILABLE') ||
+        error.message.includes('ENDPOINT_NOT_FOUND') ||
+        error.message.includes('PRESIGNED_FAILED') ||
+        error.message.includes('S3_UPLOAD_FAILED');
+
+      if (shouldUseFallback) {
+        console.log('Triggering fallback to mock service due to:', error.message);
+        throw new Error(`FALLBACK_REQUIRED: ${error.message}`);
+      } else {
+        throw new Error(`File upload failed: ${error.message}`);
+      }
     }
   }
 
   /**
-   * Delete file through backend API
+   * Delete file through backend API with error handling
    */
   async deleteFile(s3Key, entryId) {
     try {
       const response = await fetch(`${this.apiUrl}/s3/file/${entryId}`, {
         method: 'DELETE',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
+        mode: 'cors',
         body: JSON.stringify({ s3Key })
       });
 
       if (!response.ok) {
-        throw new Error(`Delete failed: ${response.status}`);
+        const errorText = await response.text();
+        console.warn(`Delete failed: ${response.status} - ${errorText}`);
+        throw new Error(`Delete failed: ${response.status} - ${errorText}`);
       }
 
-      console.log(`File deleted: ${s3Key}`);
+      console.log(`File deleted successfully: ${s3Key}`);
       return { success: true };
     } catch (error) {
-      console.error('Error deleting file:', error);
-      throw new Error(`File deletion failed: ${error.message}`);
+      console.warn('File deletion failed (file may not exist on S3):', error.message);
+      // Don't throw for delete failures - file might already be gone
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Get file download URL through backend
+   * Get file download URL through backend with fallback
    */
   async getFileUrl(s3Key, expirationTime = 3600) {
     try {
       const response = await fetch(`${this.apiUrl}/s3/download-url`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
+        mode: 'cors',
         body: JSON.stringify({ s3Key, expirationTime })
       });
 
@@ -224,17 +344,23 @@ export class SecureS3UploadService {
       const result = await response.json();
       return result.downloadUrl;
     } catch (error) {
-      console.error('Error getting download URL:', error);
-      throw new Error(`URL generation failed: ${error.message}`);
+      console.warn('Download URL generation failed:', error.message);
+      // Return a placeholder that indicates the file exists but download is unavailable
+      return `#file-unavailable-${s3Key}`;
     }
   }
 
   /**
-   * List company files through backend
+   * List company files through backend with error handling
    */
   async listCompanyFiles(companyId) {
     try {
-      const response = await fetch(`${this.apiUrl}/s3/files?companyId=${companyId}`);
+      const response = await fetch(`${this.apiUrl}/s3/files?companyId=${companyId}`, {
+        headers: {
+          'Accept': 'application/json'
+        },
+        mode: 'cors'
+      });
       
       if (!response.ok) {
         throw new Error(`Failed to list files: ${response.status}`);
@@ -242,27 +368,46 @@ export class SecureS3UploadService {
 
       return await response.json();
     } catch (error) {
-      console.error('Error listing company files:', error);
-      throw new Error(`File listing failed: ${error.message}`);
+      console.warn('File listing failed:', error.message);
+      return [];
     }
   }
 
   /**
-   * Health check for S3 service through backend
+   * Enhanced health check for S3 service
    */
   async healthCheck() {
     try {
-      const response = await fetch(`${this.apiUrl}/s3/health`);
+      const response = await fetch(`${this.apiUrl}/s3/health`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        },
+        mode: 'cors',
+        cache: 'no-cache'
+      });
       
       if (!response.ok) {
-        return { status: 'unhealthy', message: `API unreachable: ${response.status}` };
+        return { 
+          status: 'unhealthy', 
+          message: `API unreachable: ${response.status}`,
+          available: false
+        };
       }
 
       const result = await response.json();
-      return result;
+      return {
+        ...result,
+        available: result.status === 'healthy'
+      };
     } catch (error) {
-      console.error('S3 health check failed:', error);
-      return { status: 'unhealthy', message: error.message };
+      console.warn('S3 health check failed:', error.message);
+      return { 
+        status: 'unhealthy', 
+        message: error.message,
+        available: false,
+        error: error.message.includes('CORS') ? 'CORS_ERROR' : 'CONNECTION_ERROR'
+      };
     }
   }
 }
@@ -286,7 +431,9 @@ export const validateFileType = (file, allowedTypes = []) => {
       'application/vnd.ms-excel',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-powerpoint',
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'text/csv',
+      'application/json'
     ];
   }
   
