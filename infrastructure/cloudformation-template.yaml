@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'DMGT Basic Form - Data and AI Readiness Assessment Infrastructure'
+Description: 'DMGT Basic Form - Data and AI Readiness Assessment Infrastructure with S3 File Upload Support'
 
 Parameters:
   Environment:
@@ -43,6 +43,44 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # NEW: S3 Bucket for File Uploads
+  DMGTFormFilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-files-${Environment}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - '*'
+            ExposedHeaders:
+              - ETag
+              - x-amz-request-id
+            MaxAge: 3000
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
   # S3 Bucket for Static Website Hosting
   DMGTFormWebsiteBucket:
     Type: AWS::S3::Bucket
@@ -75,7 +113,38 @@ Resources:
             Action: s3:GetObject
             Resource: !Sub 'arn:aws:s3:::${DMGTFormWebsiteBucket}/*'
 
-  # IAM Role for Lambda Functions
+  # NEW: DynamoDB Table for File Registry
+  DMGTFormFileRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'dmgt-basic-form-file-registry-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: entryId
+          AttributeType: S
+        - AttributeName: companyId
+          AttributeType: S
+        - AttributeName: uploadTimestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: entryId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: CompanyIndex
+          KeySchema:
+            - AttributeName: companyId
+              KeyType: HASH
+            - AttributeName: uploadTimestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Enhanced IAM Role for Lambda Functions
   DMGTFormLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -100,18 +169,36 @@ Resources:
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:ListBucket
+                  - s3:GeneratePresignedUrl
                 Resource:
                   - !Sub 'arn:aws:s3:::${DMGTFormConfigBucket}'
                   - !Sub 'arn:aws:s3:::${DMGTFormConfigBucket}/*'
                   - !Sub 'arn:aws:s3:::${DMGTFormResponsesBucket}'
                   - !Sub 'arn:aws:s3:::${DMGTFormResponsesBucket}/*'
+                  - !Sub 'arn:aws:s3:::${DMGTFormFilesBucket}'
+                  - !Sub 'arn:aws:s3:::${DMGTFormFilesBucket}/*'
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt DMGTFormFileRegistryTable.Arn
+                  - !Sub '${DMGTFormFileRegistryTable.Arn}/index/*'
       Tags:
         - Key: Project
           Value: dmgt-basic-form
         - Key: Environment
           Value: !Ref Environment
 
-  # Lambda Function for Form Configuration - VERSION 2.0 FORCE UPDATE
+  # Lambda Function for Form Configuration
   DMGTFormConfigLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -240,10 +327,8 @@ Resources:
           Value: dmgt-basic-form
         - Key: Environment
           Value: !Ref Environment
-        - Key: Version
-          Value: "2.0-case-fix"
 
-  # Lambda Function for Form Responses - ENHANCED WITH EMPLOYEE SESSION MANAGEMENT
+  # Lambda Function for Form Responses
   DMGTFormResponsesLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -255,7 +340,7 @@ Resources:
         Variables:
           CONFIG_BUCKET: !Ref DMGTFormConfigBucket
           RESPONSES_BUCKET: !Ref DMGTFormResponsesBucket
-          VERSION: "3.0-employee-sessions"
+          VERSION: "4.0-enhanced-responses"
       Code:
         ZipFile: |
           import json
@@ -271,7 +356,7 @@ Resources:
                   http_method = event['httpMethod']
                   query_params = event.get('queryStringParameters') or {}
                   
-                  print(f"[v3.0] {http_method} request with params: {query_params}")
+                  print(f"[v4.0] {http_method} request with params: {query_params}")
                   
                   if http_method == 'OPTIONS':
                       return {
@@ -286,9 +371,12 @@ Resources:
                   if http_method == 'POST':
                       return save_response(event)
                   elif http_method == 'GET':
-                      # Check if this is a request for employee data
-                      if query_params.get('action') == 'getEmployee':
+                      # Check if this is a request for specific data
+                      action = query_params.get('action')
+                      if action == 'getEmployee':
                           return get_employee_data(event)
+                      elif action == 'getCompany':
+                          return get_company_data(event)
                       else:
                           return get_company_status(event)
                   
@@ -302,7 +390,7 @@ Resources:
                       'body': json.dumps({'error': 'Method not allowed'})
                   }
               except Exception as e:
-                  print(f"[v3.0] Error: {str(e)}")
+                  print(f"[v4.0] Error: {str(e)}")
                   return {
                       'statusCode': 500,
                       'headers': {
@@ -318,56 +406,67 @@ Resources:
               company_id = body['companyId']
               form_type = body['formType']
               responses = body['responses']
-              employee_id = body.get('employeeId')  # For returning employees
+              employee_id = body.get('employeeId')
+              manual_save = body.get('manualSave', False)
+              complete_audit = body.get('completeAudit', False)
+              prevent_auto_complete = body.get('preventAutoComplete', False)
               
               responses_bucket = os.environ['RESPONSES_BUCKET']
               timestamp = datetime.utcnow().isoformat()
               
-              print(f"[v3.0] Saving {form_type} response for company {company_id}, employee_id: {employee_id}")
+              print(f"[v4.0] Saving {form_type} response for company {company_id}, employee_id: {employee_id}")
+              print(f"[v4.0] Manual save: {manual_save}, Complete audit: {complete_audit}")
               
               if form_type == 'company':
-                  # Check if company form already exists
-                  try:
-                      s3.head_object(Bucket=responses_bucket, Key=f'{company_id}/company.json')
-                      return {
-                          'statusCode': 400,
-                          'headers': {
-                              'Access-Control-Allow-Origin': '*',
-                              'Access-Control-Allow-Headers': 'Content-Type',
-                              'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
-                          },
-                          'body': json.dumps({'error': 'Company questionnaire already completed for this Company ID'})
-                      }
-                  except ClientError:
-                      pass  # File doesn't exist, proceed
-                  
                   filename = f'{company_id}/company.json'
                   final_employee_id = None
+                  
+                  # Calculate completion percentage
+                  total_questions = len([k for k in responses.keys() if not k.startswith('_')])
+                  answered_questions = len([k for k, v in responses.items() if v and str(v).strip() != '' and not k.startswith('_')])
+                  completion_percentage = (answered_questions / total_questions * 100) if total_questions > 0 else 0
+                  
+                  # Determine status
+                  company_completed = complete_audit or (completion_percentage == 100 and not prevent_auto_complete)
+                  company_in_progress = completion_percentage > 0 and not company_completed
+                  
               else:
-                  # Employee form - use provided employee_id or create new one
+                  # Employee form
                   if employee_id is not None:
-                      # Returning employee - update existing record
                       final_employee_id = employee_id
-                      print(f"[v3.0] Updating existing employee {employee_id}")
+                      print(f"[v4.0] Updating existing employee {employee_id}")
                   else:
-                      # New employee - get next ID
                       final_employee_id = get_next_employee_id(company_id)
-                      print(f"[v3.0] Creating new employee with ID {final_employee_id}")
+                      print(f"[v4.0] Creating new employee with ID {final_employee_id}")
                   
                   filename = f'{company_id}/employee_{final_employee_id}.json'
                   responses['employeeId'] = final_employee_id
+                  
+                  # Calculate completion percentage for employee
+                  total_questions = len([k for k in responses.keys() if not k.startswith('_')])
+                  answered_questions = len([k for k, v in responses.items() if v and str(v).strip() != '' and not k.startswith('_')])
+                  completion_percentage = (answered_questions / total_questions * 100) if total_questions > 0 else 0
+                  
+                  company_completed = False
+                  company_in_progress = False
               
               # Add metadata
               response_data = {
                   'companyId': company_id,
                   'formType': form_type,
                   'timestamp': timestamp,
-                  'lastUpdated': timestamp,
-                  'responses': responses
+                  'lastModified': timestamp,
+                  'responses': responses,
+                  'completionPercentage': completion_percentage
               }
               
               if form_type == 'employee':
                   response_data['employeeId'] = final_employee_id
+              elif form_type == 'company':
+                  response_data['companyCompleted'] = company_completed
+                  response_data['companyInProgress'] = company_in_progress
+                  response_data['manualSave'] = manual_save
+                  response_data['completedByAudit'] = complete_audit
               
               # Save to S3
               s3.put_object(
@@ -377,7 +476,16 @@ Resources:
                   ContentType='application/json'
               )
               
-              print(f"[v3.0] Saved to {filename}")
+              print(f"[v4.0] Saved to {filename} with {completion_percentage}% completion")
+              
+              response_body = {
+                  'message': 'Response saved successfully', 
+                  'filename': filename,
+                  'completionPercentage': completion_percentage
+              }
+              
+              if form_type == 'employee':
+                  response_body['employeeId'] = final_employee_id
               
               return {
                   'statusCode': 200,
@@ -386,12 +494,66 @@ Resources:
                       'Access-Control-Allow-Headers': 'Content-Type',
                       'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
                   },
-                  'body': json.dumps({
-                      'message': 'Response saved successfully', 
-                      'filename': filename,
-                      'employeeId': final_employee_id
-                  })
+                  'body': json.dumps(response_body)
               }
+
+          def get_company_data(event):
+              """Get existing company data for modification"""
+              query_params = event.get('queryStringParameters') or {}
+              company_id = query_params.get('companyId')
+              
+              if not company_id:
+                  return {
+                      'statusCode': 400,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({'error': 'companyId required'})
+                  }
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              filename = f'{company_id}/company.json'
+              
+              try:
+                  response = s3.get_object(Bucket=responses_bucket, Key=filename)
+                  company_data = json.loads(response['Body'].read().decode('utf-8'))
+                  
+                  print(f"[v4.0] Retrieved company data for {company_id}")
+                  
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                      },
+                      'body': json.dumps({
+                          'found': True,
+                          'responses': company_data.get('responses', {}),
+                          'lastModified': company_data.get('lastModified'),
+                          'completionPercentage': company_data.get('completionPercentage', 0),
+                          'companyCompleted': company_data.get('companyCompleted', False),
+                          'companyInProgress': company_data.get('companyInProgress', False)
+                      })
+                  }
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'NoSuchKey':
+                      return {
+                          'statusCode': 200,
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': 'Content-Type',
+                              'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+                          },
+                          'body': json.dumps({
+                              'found': False,
+                              'message': f'No company data found for {company_id}'
+                          })
+                      }
+                  else:
+                      raise e
 
           def get_employee_data(event):
               """Get existing employee data for returning employees"""
@@ -417,7 +579,7 @@ Resources:
                   response = s3.get_object(Bucket=responses_bucket, Key=filename)
                   employee_data = json.loads(response['Body'].read().decode('utf-8'))
                   
-                  print(f"[v3.0] Retrieved employee {employee_id} data for company {company_id}")
+                  print(f"[v4.0] Retrieved employee {employee_id} data for company {company_id}")
                   
                   return {
                       'statusCode': 200,
@@ -430,7 +592,7 @@ Resources:
                           'found': True,
                           'employeeData': employee_data,
                           'responses': employee_data.get('responses', {}),
-                          'lastUpdated': employee_data.get('lastUpdated'),
+                          'lastUpdated': employee_data.get('lastModified'),
                           'employeeId': employee_id
                       })
                   }
@@ -486,11 +648,22 @@ Resources:
                   }
               
               responses_bucket = os.environ['RESPONSES_BUCKET']
+              
+              # Check company completion and get metadata
+              company_completed = False
+              company_in_progress = False
+              completion_percentage = 0
+              last_modified = None
+              
               try:
-                  s3.head_object(Bucket=responses_bucket, Key=f'{company_id}/company.json')
-                  company_completed = True
+                  response = s3.get_object(Bucket=responses_bucket, Key=f'{company_id}/company.json')
+                  company_data = json.loads(response['Body'].read().decode('utf-8'))
+                  company_completed = company_data.get('companyCompleted', False)
+                  company_in_progress = company_data.get('companyInProgress', False)
+                  completion_percentage = company_data.get('completionPercentage', 0)
+                  last_modified = company_data.get('lastModified')
               except ClientError:
-                  company_completed = False
+                  pass  # Company file doesn't exist
               
               # Count employees and get their IDs
               try:
@@ -520,6 +693,9 @@ Resources:
                   },
                   'body': json.dumps({
                       'companyCompleted': company_completed,
+                      'companyInProgress': company_in_progress,
+                      'completionPercentage': completion_percentage,
+                      'lastModified': last_modified,
                       'employeeCount': employee_count,
                       'employeeIds': employee_ids,
                       'nextEmployeeId': max(employee_ids) + 1 if employee_ids else 0
@@ -530,33 +706,317 @@ Resources:
           Value: dmgt-basic-form
         - Key: Environment
           Value: !Ref Environment
-        - Key: Version
-          Value: "3.0-employee-sessions"
 
-  # API Gateway
-  DMGTFormAPI:
-    Type: AWS::ApiGateway::RestApi
+  # NEW: Lambda Function for S3 File Operations
+  DMGTFormS3Lambda:
+    Type: AWS::Lambda::Function
     Properties:
-      Name: !Sub 'dmgt-basic-form-api-${Environment}'
-      Description: API for DMGT Basic Form
+      FunctionName: !Sub 'dmgt-basic-form-s3-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt DMGTFormLambdaRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          FILES_BUCKET: !Ref DMGTFormFilesBucket
+          REGISTRY_TABLE: !Ref DMGTFormFileRegistryTable
+          VERSION: "1.0-s3-operations"
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import uuid
+          import os
+          from datetime import datetime, timedelta
+          from botocore.exceptions import ClientError
+          from urllib.parse import unquote_plus
+
+          s3 = boto3.client('s3')
+          dynamodb = boto3.resource('dynamodb')
+
+          def lambda_handler(event, context):
+              try:
+                  http_method = event['httpMethod']
+                  path = event['path']
+                  
+                  print(f"[S3v1.0] {http_method} {path}")
+                  
+                  # Handle CORS preflight
+                  if http_method == 'OPTIONS':
+                      return cors_response(200, {})
+                  
+                  # Route requests
+                  if path == '/s3/health':
+                      return health_check()
+                  elif path == '/s3/presigned-url' and http_method == 'POST':
+                      return generate_presigned_url(event)
+                  elif path.startswith('/s3/file/') and http_method == 'DELETE':
+                      return delete_file(event)
+                  elif path == '/s3/download-url' and http_method == 'POST':
+                      return generate_download_url(event)
+                  elif path == '/s3/files' and http_method == 'GET':
+                      return list_files(event)
+                  elif path == '/file-registry':
+                      if http_method == 'GET':
+                          return get_registry(event)
+                      elif http_method == 'POST':
+                          return update_registry(event)
+                  
+                  return cors_response(404, {'error': 'Not found'})
+                  
+              except Exception as e:
+                  print(f"[S3v1.0] Error: {str(e)}")
+                  return cors_response(500, {'error': str(e)})
+
+          def cors_response(status_code, body=None):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type, Cache-Control',
+                      'Access-Control-Allow-Methods': 'OPTIONS,GET,POST,PUT,DELETE',
+                      'Access-Control-Max-Age': '86400'
+                  },
+                  'body': json.dumps(body) if body else ''
+              }
+
+          def health_check():
+              try:
+                  # Test S3 access
+                  bucket = os.environ['FILES_BUCKET']
+                  s3.head_bucket(Bucket=bucket)
+                  
+                  # Test DynamoDB access
+                  table_name = os.environ['REGISTRY_TABLE']
+                  table = dynamodb.Table(table_name)
+                  table.table_status
+                  
+                  return cors_response(200, {
+                      'status': 'healthy',
+                      'timestamp': datetime.utcnow().isoformat(),
+                      's3_bucket': bucket,
+                      'dynamodb_table': table_name
+                  })
+              except Exception as e:
+                  return cors_response(503, {
+                      'status': 'unhealthy',
+                      'error': str(e)
+                  })
+
+          def generate_presigned_url(event):
+              try:
+                  body = json.loads(event['body'])
+                  file_name = body['fileName']
+                  file_type = body['fileType']
+                  company_id = body['companyId']
+                  employee_id = body.get('employeeId')
+                  question_id = body['questionId']
+                  
+                  bucket = os.environ['FILES_BUCKET']
+                  entry_id = str(uuid.uuid4())
+                  
+                  # Create S3 key with proper organization
+                  if employee_id:
+                      s3_key = f"companies/{company_id}/employees/{employee_id}/questions/{question_id}/{entry_id}_{file_name}"
+                  else:
+                      s3_key = f"companies/{company_id}/questions/{question_id}/{entry_id}_{file_name}"
+                  
+                  # Generate presigned URL for upload
+                  upload_url = s3.generate_presigned_url(
+                      'put_object',
+                      Params={
+                          'Bucket': bucket,
+                          'Key': s3_key,
+                          'ContentType': file_type
+                      },
+                      ExpiresIn=3600
+                  )
+                  
+                  # Generate presigned URL for download
+                  download_url = s3.generate_presigned_url(
+                      'get_object',
+                      Params={
+                          'Bucket': bucket,
+                          'Key': s3_key
+                      },
+                      ExpiresIn=86400  # 24 hours
+                  )
+                  
+                  return cors_response(200, {
+                      'uploadUrl': upload_url,
+                      'downloadUrl': download_url,
+                      's3Key': s3_key,
+                      's3Bucket': bucket,
+                      'entryId': entry_id
+                  })
+                  
+              except Exception as e:
+                  print(f"[S3v1.0] Presigned URL error: {str(e)}")
+                  return cors_response(400, {'error': str(e)})
+
+          def delete_file(event):
+              try:
+                  path_params = event['pathParameters'] or {}
+                  entry_id = path_params.get('id')
+                  body = json.loads(event.get('body', '{}'))
+                  s3_key = body.get('s3Key')
+                  
+                  if not entry_id or not s3_key:
+                      return cors_response(400, {'error': 'entryId and s3Key required'})
+                  
+                  bucket = os.environ['FILES_BUCKET']
+                  
+                  # Delete from S3
+                  try:
+                      s3.delete_object(Bucket=bucket, Key=s3_key)
+                  except ClientError as e:
+                      if e.response['Error']['Code'] != 'NoSuchKey':
+                          raise
+                  
+                  # Delete from registry
+                  table = dynamodb.Table(os.environ['REGISTRY_TABLE'])
+                  try:
+                      table.delete_item(Key={'entryId': entry_id})
+                  except ClientError:
+                      pass  # Entry might not exist
+                  
+                  return cors_response(200, {'message': 'File deleted successfully'})
+                  
+              except Exception as e:
+                  print(f"[S3v1.0] Delete error: {str(e)}")
+                  return cors_response(400, {'error': str(e)})
+
+          def generate_download_url(event):
+              try:
+                  body = json.loads(event['body'])
+                  s3_key = body['s3Key']
+                  expiration = body.get('expirationTime', 3600)
+                  
+                  bucket = os.environ['FILES_BUCKET']
+                  
+                  url = s3.generate_presigned_url(
+                      'get_object',
+                      Params={
+                          'Bucket': bucket,
+                          'Key': s3_key
+                      },
+                      ExpiresIn=expiration
+                  )
+                  
+                  return cors_response(200, {'downloadUrl': url})
+                  
+              except Exception as e:
+                  return cors_response(400, {'error': str(e)})
+
+          def list_files(event):
+              try:
+                  query_params = event.get('queryStringParameters') or {}
+                  company_id = query_params.get('companyId')
+                  
+                  if not company_id:
+                      return cors_response(400, {'error': 'companyId required'})
+                  
+                  table = dynamodb.Table(os.environ['REGISTRY_TABLE'])
+                  
+                  response = table.query(
+                      IndexName='CompanyIndex',
+                      KeyConditionExpression=boto3.dynamodb.conditions.Key('companyId').eq(company_id)
+                  )
+                  
+                  files = []
+                  for item in response['Items']:
+                      files.append({
+                          'entryId': item['entryId'],
+                          'fileName': item.get('fileName'),
+                          'fileSize': item.get('fileSize'),
+                          'fileType': item.get('fileType'),
+                          's3Key': item.get('s3Key'),
+                          'uploadTimestamp': item.get('uploadTimestamp'),
+                          'questionId': item.get('questionId'),
+                          'employeeId': item.get('employeeId')
+                      })
+                  
+                  return cors_response(200, files)
+                  
+              except Exception as e:
+                  return cors_response(400, {'error': str(e)})
+
+          def get_registry(event):
+              try:
+                  query_params = event.get('queryStringParameters') or {}
+                  company_id = query_params.get('companyId')
+                  employee_id = query_params.get('employeeId')
+                  
+                  table = dynamodb.Table(os.environ['REGISTRY_TABLE'])
+                  
+                  if company_id:
+                      response = table.query(
+                          IndexName='CompanyIndex',
+                          KeyConditionExpression=boto3.dynamodb.conditions.Key('companyId').eq(company_id)
+                      )
+                      return cors_response(200, response['Items'])
+                  elif employee_id:
+                      response = table.scan(
+                          FilterExpression=boto3.dynamodb.conditions.Attr('employeeId').eq(employee_id)
+                      )
+                      return cors_response(200, response['Items'])
+                  else:
+                      return cors_response(400, {'error': 'companyId or employeeId required'})
+                      
+              except Exception as e:
+                  return cors_response(400, {'error': str(e)})
+
+          def update_registry(event):
+              try:
+                  body = json.loads(event['body'])
+                  
+                  entry_id = body.get('entryId', str(uuid.uuid4()))
+                  timestamp = datetime.utcnow().isoformat()
+                  
+                  item = {
+                      'entryId': entry_id,
+                      'companyId': body['companyId'],
+                      'employeeId': body.get('employeeId'),
+                      'questionId': body['questionId'],
+                      'fileName': body['fileName'],
+                      'fileSize': body['fileSize'],
+                      'fileType': body['fileType'],
+                      's3Key': body.get('s3Key'),
+                      'uploadTimestamp': timestamp,
+                      'formType': body.get('formType'),
+                      'questionText': body.get('questionText'),
+                      'organizationId': body.get('organizationId')
+                  }
+                  
+                  # Remove None values
+                  item = {k: v for k, v in item.items() if v is not None}
+                  
+                  table = dynamodb.Table(os.environ['REGISTRY_TABLE'])
+                  table.put_item(Item=item)
+                  
+                  return cors_response(200, {'entryId': entry_id})
+                  
+              except Exception as e:
+                  return cors_response(400, {'error': str(e)})
       Tags:
         - Key: Project
           Value: dmgt-basic-form
         - Key: Environment
           Value: !Ref Environment
 
-  # API Gateway Deployment
-  DMGTFormAPIDeployment:
-    Type: AWS::ApiGateway::Deployment
-    DependsOn:
-      - DMGTFormConfigMethod
-      - DMGTFormConfigOptionsMethod
-      - DMGTFormResponsesMethod
+  # API Gateway
+  DMGTFormAPI:
+    Type: AWS::ApiGateway::RestApi
     Properties:
-      RestApiId: !Ref DMGTFormAPI
-      StageName: !Ref Environment
+      Name: !Sub 'dmgt-basic-form-api-${Environment}'
+      Description: API for DMGT Basic Form with S3 file upload support
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
 
-  # API Gateway Resources and Methods
+  # API Gateway Resources
   DMGTFormConfigResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -571,6 +1031,36 @@ Resources:
       ParentId: !Ref DMGTFormConfigResource
       PathPart: '{proxy+}'
 
+  DMGTFormResponsesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: responses
+
+  # NEW: S3 Resources
+  DMGTFormS3Resource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: s3
+
+  DMGTFormS3ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !Ref DMGTFormS3Resource
+      PathPart: '{proxy+}'
+
+  DMGTFormFileRegistryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: file-registry
+
+  # API Gateway Methods
   DMGTFormConfigMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -583,7 +1073,6 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormConfigLambda.Arn}/invocations'
 
-  # OPTIONS method for CORS
   DMGTFormConfigOptionsMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -596,13 +1085,6 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormConfigLambda.Arn}/invocations'
 
-  DMGTFormResponsesResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref DMGTFormAPI
-      ParentId: !GetAtt DMGTFormAPI.RootResourceId
-      PathPart: responses
-
   DMGTFormResponsesMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -614,6 +1096,31 @@ Resources:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormResponsesLambda.Arn}/invocations'
+
+  # NEW: S3 Methods
+  DMGTFormS3Method:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref DMGTFormS3ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormS3Lambda.Arn}/invocations'
+
+  DMGTFormFileRegistryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref DMGTFormFileRegistryResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormS3Lambda.Arn}/invocations'
 
   # Lambda Permissions
   DMGTFormConfigLambdaPermission:
@@ -631,6 +1138,27 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DMGTFormAPI}/*/*/*'
+
+  DMGTFormS3LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DMGTFormS3Lambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DMGTFormAPI}/*/*/*'
+
+  # API Gateway Deployment (must be last)
+  DMGTFormAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - DMGTFormConfigMethod
+      - DMGTFormConfigOptionsMethod
+      - DMGTFormResponsesMethod
+      - DMGTFormS3Method
+      - DMGTFormFileRegistryMethod
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      StageName: !Ref Environment
 
   # CloudFront Distribution
   DMGTFormCloudFrontDistribution:
@@ -687,6 +1215,18 @@ Outputs:
     Value: !Ref DMGTFormResponsesBucket
     Export:
       Name: !Sub '${AWS::StackName}-ResponsesBucket'
+
+  FilesBucketName:
+    Description: Name of the S3 bucket for file uploads
+    Value: !Ref DMGTFormFilesBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-FilesBucket'
+
+  FileRegistryTableName:
+    Description: Name of the DynamoDB table for file registry
+    Value: !Ref DMGTFormFileRegistryTable
+    Export:
+      Name: !Sub '${AWS::StackName}-FileRegistryTable'
 
   ApiGatewayUrl:
     Description: URL of the API Gateway
