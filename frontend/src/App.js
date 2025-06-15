@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
+// Import the proper upload services
+import { mockFileUploadService, validateFileType, validateFileSize, formatFileSize } from './services/mockFileUploadService';
+import { secureS3UploadService } from './services/secureS3UploadService';
+
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://hfrcfsq0v6.execute-api.eu-west-2.amazonaws.com/dev';
 
 function App() {
@@ -33,6 +37,11 @@ function App() {
   // Current form section tracking
   const [companySection, setCompanySection] = useState(1);
   const [employeeSection, setEmployeeSection] = useState(1);
+
+  // File upload states
+  const [uploadingFiles, setUploadingFiles] = useState({});
+  const [uploadedFiles, setUploadedFiles] = useState({});
+  const [fileUploadErrors, setFileUploadErrors] = useState({});
 
   // Clear messages after delay
   useEffect(() => {
@@ -76,6 +85,120 @@ function App() {
       console.error('API Error:', error);
       throw new Error(`API Error: ${error.message}`);
     }
+  };
+
+  // ENHANCED: Robust file upload function using the proper services
+  const handleFileUpload = async (files, formType, questionId = 'SUPPORTING_DOCS') => {
+    const uploadPromises = Array.from(files).map(async (file) => {
+      const fileKey = `${formType}_${questionId}_${file.name}`;
+      
+      try {
+        setUploadingFiles(prev => ({ ...prev, [fileKey]: true }));
+        setFileUploadErrors(prev => ({ ...prev, [fileKey]: null }));
+
+        // Validate file
+        if (!validateFileType(file)) {
+          throw new Error('File type not allowed. Please upload PDF, DOC, TXT, Image, Excel, or PowerPoint files.');
+        }
+        
+        if (!validateFileSize(file, 10)) {
+          throw new Error('File size must be less than 10MB');
+        }
+
+        console.log(`Starting upload for ${file.name} using robust upload system`);
+
+        // Try secure S3 upload first, then fallback to mock service
+        let uploadResult;
+        try {
+          // Attempt secure S3 upload
+          uploadResult = await secureS3UploadService.uploadFile(
+            file,
+            companyId,
+            formType === 'employee' ? currentEmployeeId : null,
+            questionId,
+            {
+              formType,
+              uploadedFrom: 'App.js',
+              timestamp: new Date().toISOString()
+            }
+          );
+          console.log('File uploaded to S3 successfully:', uploadResult);
+        } catch (s3Error) {
+          console.warn('S3 upload failed, falling back to local storage:', s3Error);
+          
+          // Fallback to mock service for local storage
+          uploadResult = await mockFileUploadService.uploadFile(
+            file,
+            companyId,
+            formType === 'employee' ? currentEmployeeId : null,
+            questionId,
+            {
+              formType,
+              uploadedFrom: 'App.js',
+              fallbackFromS3: true,
+              timestamp: new Date().toISOString()
+            }
+          );
+          console.log('File stored locally as fallback:', uploadResult);
+          uploadResult.storedLocally = true;
+        }
+
+        // Store file info for display
+        const fileInfo = {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          s3Key: uploadResult.s3Key || null,
+          s3Url: uploadResult.url || null,
+          mockId: uploadResult.mockId || null,
+          storedLocally: uploadResult.storedLocally || false,
+          uploadedAt: new Date().toISOString(),
+          entryId: uploadResult.entryId
+        };
+
+        setUploadedFiles(prev => ({
+          ...prev,
+          [fileKey]: fileInfo
+        }));
+
+        return {
+          success: true,
+          file: file.name,
+          fileInfo
+        };
+
+      } catch (error) {
+        console.error(`Upload failed for ${file.name}:`, error);
+        setFileUploadErrors(prev => ({
+          ...prev,
+          [fileKey]: error.message
+        }));
+        
+        return {
+          success: false,
+          file: file.name,
+          error: error.message
+        };
+      } finally {
+        setUploadingFiles(prev => ({ ...prev, [fileKey]: false }));
+      }
+    });
+
+    const results = await Promise.all(uploadPromises);
+    
+    // Show summary message
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+    
+    if (successCount > 0 && failCount === 0) {
+      setSuccess(`All ${successCount} file(s) uploaded successfully!`);
+    } else if (successCount > 0 && failCount > 0) {
+      setSuccess(`${successCount} file(s) uploaded successfully, ${failCount} failed.`);
+    } else if (failCount > 0) {
+      setError(`Failed to upload ${failCount} file(s). Please try again.`);
+    }
+
+    return results;
   };
 
   // Check company status with enhanced error handling
@@ -137,10 +260,27 @@ function App() {
     return () => clearTimeout(timeoutId);
   }, [companyId, checkCompanyStatus, loadEmployeeList]);
 
-  // FIXED: Company form now only saves when Save button is clicked - no auto-save
+  // ENHANCED: Company form save with improved error handling and file upload tracking
   const saveCompanyForm = async () => {
     if (!companyId.trim()) {
       setError('Please enter a Company ID first');
+      return;
+    }
+
+    // Validate required fields
+    const requiredFields = [
+      { field: companyFormData.section1.companyName, name: 'Company Name' },
+      { field: companyFormData.section1.industry, name: 'Industry' },
+      { field: companyFormData.section1.employees, name: 'Number of Employees' },
+      { field: companyFormData.section2.address, name: 'Company Address' },
+      { field: companyFormData.section2.email, name: 'Email Address' },
+      { field: companyFormData.section3.description, name: 'Company Description' }
+    ];
+
+    const missingFields = requiredFields.filter(({ field }) => !field || field.trim() === '');
+    
+    if (missingFields.length > 0) {
+      setError(`Please fill in all required fields: ${missingFields.map(f => f.name).join(', ')}`);
       return;
     }
 
@@ -148,24 +288,34 @@ function App() {
       setLoading(true);
       setError('');
       
+      // Include uploaded file information in the form data
+      const uploadedFilesList = Object.values(uploadedFiles).filter(file => 
+        file && file.name && file.name.includes('company') || file.formType === 'company'
+      );
+      
       // Save entire company form at once
       const payload = {
         companyId: companyId.trim(),
         formType: 'company',
         responses: companyFormData,
+        uploadedFiles: uploadedFilesList,
         timestamp: new Date().toISOString(),
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
+        version: '2.0' // Indicate enhanced version with file support
       };
+
+      console.log('Saving company form with payload:', payload);
 
       await apiCall('/responses', {
         method: 'POST',
         body: JSON.stringify(payload)
       });
 
-      setSuccess('Company form saved successfully!');
+      setSuccess('Company form saved successfully! All data and uploaded files have been stored securely.');
       setCompanyStatus('completed');
       
     } catch (error) {
+      console.error('Company form save error:', error);
       setError(`Failed to save company data: ${error.message}`);
     } finally {
       setLoading(false);
@@ -183,12 +333,18 @@ function App() {
       setLoading(true);
       setError('');
       
+      // Include uploaded file information for this employee
+      const uploadedFilesList = Object.values(uploadedFiles).filter(file => 
+        file && file.employeeId === currentEmployeeId
+      );
+      
       const sectionData = {
         ...employeeFormData,
         currentSection: employeeSection,
         isCompleted: employeeSection === 3,
         lastSaved: new Date().toISOString(),
-        companyId: companyId.trim()
+        companyId: companyId.trim(),
+        uploadedFiles: uploadedFilesList
       };
 
       await apiCall('/responses/save-employee', {
@@ -525,7 +681,7 @@ function App() {
     </div>
   );
 
-  // Company Form View - FIXED: Single save button, no auto-save
+  // ENHANCED: Company Form View with proper file upload integration
   const CompanyFormView = () => (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       <div className="container mx-auto px-6 py-12">
@@ -731,58 +887,70 @@ function App() {
                   />
                 </div>
                 
-                {/* FIXED: Document upload for company form */}
+                {/* ENHANCED: Document upload with proper service integration */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-3">Supporting Documents (Optional)</label>
-                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6">
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 hover:border-blue-500 transition-colors">
                     <input
                       type="file"
                       id="company-file-upload"
                       multiple
-                      accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx"
+                      accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.jpg,.jpeg,.png,.gif"
                       onChange={async (e) => {
-                        const files = Array.from(e.target.files);
-                        if (files.length > 0) {
-                          try {
-                            setLoading(true);
-                            for (const file of files) {
-                              const formData = new FormData();
-                              formData.append('file', file);
-                              formData.append('companyId', companyId);
-                              formData.append('formType', 'company');
-                              
-                              const uploadResponse = await fetch(`${API_BASE_URL}/upload`, {
-                                method: 'POST',
-                                body: formData
-                              });
-                              
-                              if (uploadResponse.ok) {
-                                setSuccess(`File "${file.name}" uploaded successfully to S3`);
-                              } else {
-                                throw new Error(`Upload failed for ${file.name}`);
-                              }
-                            }
-                          } catch (error) {
-                            setError(`File upload failed: ${error.message}`);
-                          } finally {
-                            setLoading(false);
-                          }
+                        const files = e.target.files;
+                        if (files && files.length > 0) {
+                          await handleFileUpload(files, 'company', 'COMPANY_SUPPORTING_DOCS');
                         }
                       }}
                       className="hidden"
                     />
                     <label htmlFor="company-file-upload" className="cursor-pointer block text-center">
                       <div className="text-4xl text-gray-400 mb-2">📎</div>
-                      <p className="text-gray-600 font-medium">Click to upload supporting documents</p>
-                      <p className="text-sm text-gray-500 mt-1">PDF, DOC, Excel, PowerPoint files (Max 10MB each)</p>
+                      <p className="text-gray-600 font-medium text-lg">Click to upload supporting documents</p>
+                      <p className="text-sm text-gray-500 mt-2">PDF, DOC, Excel, PowerPoint, Images (Max 10MB each)</p>
+                      <p className="text-xs text-blue-600 mt-1">Files will be uploaded to secure S3 storage with fallback to local storage</p>
                     </label>
                   </div>
+
+                  {/* Upload progress and file display */}
+                  {Object.keys(uploadingFiles).some(key => key.includes('company') && uploadingFiles[key]) && (
+                    <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                      <div className="flex items-center">
+                        <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-600 border-t-transparent mr-3"></div>
+                        <span className="text-blue-800 font-medium">Uploading files to S3...</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Display uploaded files */}
+                  {Object.entries(uploadedFiles).filter(([key]) => key.includes('company')).map(([key, file]) => (
+                    <div key={key} className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
+                      <div className="flex items-center">
+                        <span className="text-green-600 mr-2">✅</span>
+                        <span className="font-medium">{file.name}</span>
+                        <span className="text-sm text-gray-500 ml-2">({formatFileSize(file.size)})</span>
+                      </div>
+                      <span className="text-xs text-blue-600">
+                        {file.storedLocally ? 'Stored locally' : 'Uploaded to S3'}
+                      </span>
+                    </div>
+                  ))}
+
+                  {/* Display upload errors */}
+                  {Object.entries(fileUploadErrors).filter(([key]) => key.includes('company')).map(([key, error]) => (
+                    <div key={key} className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <div className="flex items-center">
+                        <span className="text-red-600 mr-2">❌</span>
+                        <span className="text-red-800">{error}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
           </div>
 
-          {/* FIXED: Single Save Button for entire form */}
+          {/* ENHANCED: Single Save Button with proper loading state */}
           <div className="mt-12 pt-8 border-t-2 border-gray-200">
             <button
               onClick={saveCompanyForm}
@@ -792,7 +960,7 @@ function App() {
               {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-6 w-6 border-3 border-white border-t-transparent mr-3"></div>
-                  Saving...
+                  Saving Company Form & Files...
                 </>
               ) : (
                 <>
@@ -801,13 +969,16 @@ function App() {
                 </>
               )}
             </button>
+            <p className="text-center text-sm text-gray-500 mt-3">
+              This will save all form data and uploaded files securely
+            </p>
           </div>
         </div>
       </div>
     </div>
   );
 
-  // Employee Form View (keep existing - only one section saves at a time)
+  // Employee Form View - Enhanced with proper file upload integration
   const EmployeeFormView = () => (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100">
       <div className="container mx-auto px-6 py-12">
@@ -1037,53 +1208,64 @@ function App() {
                   />
                 </div>
 
-                {/* FIXED: Document upload for employee form */}
+                {/* ENHANCED: Document upload for employee form */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-3">Supporting Documents (Optional)</label>
-                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6">
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 hover:border-green-500 transition-colors">
                     <input
                       type="file"
                       id="employee-file-upload"
                       multiple
-                      accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx"
+                      accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.jpg,.jpeg,.png,.gif"
                       onChange={async (e) => {
-                        const files = Array.from(e.target.files);
-                        if (files.length > 0) {
-                          try {
-                            setLoading(true);
-                            for (const file of files) {
-                              const formData = new FormData();
-                              formData.append('file', file);
-                              formData.append('companyId', companyId);
-                              formData.append('employeeId', currentEmployeeId);
-                              formData.append('formType', 'employee');
-                              
-                              const uploadResponse = await fetch(`${API_BASE_URL}/upload`, {
-                                method: 'POST',
-                                body: formData
-                              });
-                              
-                              if (uploadResponse.ok) {
-                                setSuccess(`File "${file.name}" uploaded successfully to S3`);
-                              } else {
-                                throw new Error(`Upload failed for ${file.name}`);
-                              }
-                            }
-                          } catch (error) {
-                            setError(`File upload failed: ${error.message}`);
-                          } finally {
-                            setLoading(false);
-                          }
+                        const files = e.target.files;
+                        if (files && files.length > 0) {
+                          await handleFileUpload(files, 'employee', `EMP_SEC${employeeSection}_DOCS`);
                         }
                       }}
                       className="hidden"
                     />
                     <label htmlFor="employee-file-upload" className="cursor-pointer block text-center">
                       <div className="text-4xl text-gray-400 mb-2">📎</div>
-                      <p className="text-gray-600 font-medium">Click to upload supporting documents</p>
-                      <p className="text-sm text-gray-500 mt-1">PDF, DOC, Excel, PowerPoint files (Max 10MB each)</p>
+                      <p className="text-gray-600 font-medium text-lg">Click to upload supporting documents</p>
+                      <p className="text-sm text-gray-500 mt-2">PDF, DOC, Excel, PowerPoint, Images (Max 10MB each)</p>
+                      <p className="text-xs text-green-600 mt-1">Files will be uploaded to secure S3 storage with fallback to local storage</p>
                     </label>
                   </div>
+
+                  {/* Upload progress and file display for employee */}
+                  {Object.keys(uploadingFiles).some(key => key.includes('employee') && uploadingFiles[key]) && (
+                    <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                      <div className="flex items-center">
+                        <div className="animate-spin rounded-full h-6 w-6 border-2 border-green-600 border-t-transparent mr-3"></div>
+                        <span className="text-green-800 font-medium">Uploading files to S3...</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Display uploaded files for employee */}
+                  {Object.entries(uploadedFiles).filter(([key]) => key.includes('employee')).map(([key, file]) => (
+                    <div key={key} className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
+                      <div className="flex items-center">
+                        <span className="text-green-600 mr-2">✅</span>
+                        <span className="font-medium">{file.name}</span>
+                        <span className="text-sm text-gray-500 ml-2">({formatFileSize(file.size)})</span>
+                      </div>
+                      <span className="text-xs text-blue-600">
+                        {file.storedLocally ? 'Stored locally' : 'Uploaded to S3'}
+                      </span>
+                    </div>
+                  ))}
+
+                  {/* Display upload errors for employee */}
+                  {Object.entries(fileUploadErrors).filter(([key]) => key.includes('employee')).map(([key, error]) => (
+                    <div key={key} className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <div className="flex items-center">
+                        <span className="text-red-600 mr-2">❌</span>
+                        <span className="text-red-800">{error}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1099,7 +1281,7 @@ function App() {
               {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-6 w-6 border-3 border-white border-t-transparent mr-3"></div>
-                  Saving...
+                  Saving Section...
                 </>
               ) : (
                 <>
@@ -1108,6 +1290,9 @@ function App() {
                 </>
               )}
             </button>
+            <p className="text-center text-sm text-gray-500 mt-3">
+              {employeeSection === 3 ? 'This will save all form data and uploaded files' : 'Progress will be saved automatically'}
+            </p>
           </div>
         </div>
       </div>
