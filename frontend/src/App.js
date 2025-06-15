@@ -42,6 +42,9 @@ function App() {
   const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed', 'read_only'
   const [isInitialLoad, setIsInitialLoad] = useState(true); // Track if this is the first load
 
+  // NEW: Employee ID notification state
+  const [showEmployeeIdNotification, setShowEmployeeIdNotification] = useState(false);
+
   const tabs = [
     { id: 'company', label: 'Organization Assessment', icon: '🏢' },
     { id: 'employee', label: 'Employee Assessment', icon: '👤' }
@@ -94,6 +97,18 @@ function App() {
     }
   }, [companyId]);
 
+  // NEW: Show employee ID notification when ID is assigned
+  useEffect(() => {
+    if (currentEmployeeId !== null && employeeSessionMode === 'new' && activeTab === 'employee') {
+      setShowEmployeeIdNotification(true);
+      // Auto-hide after 10 seconds
+      const timer = setTimeout(() => {
+        setShowEmployeeIdNotification(false);
+      }, 10000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentEmployeeId, employeeSessionMode, activeTab]);
+
   const resetEmployeeSession = () => {
     setEmployeeSessionMode(null);
     setCurrentEmployeeId(null);
@@ -101,6 +116,7 @@ function App() {
     setSessionInitialized(false);
     setResponses({});
     setSaveStatus('');
+    setShowEmployeeIdNotification(false);
     console.log('Employee session reset');
   };
 
@@ -152,14 +168,14 @@ function App() {
           setLastSavedTime(status.lastModified);
         }
 
-        // CRITICAL FIX: Proper form state determination
+        // CRITICAL FIX: Proper form state determination with better modification support
         const hasAnyResponses = status.completionPercentage > 0;
         const isFullyComplete = status.completionPercentage === 100 && status.companyCompleted;
         
         if (isFullyComplete) {
-          // Only mark as completed if it's actually 100% complete
+          // Allow modification of completed forms with clear indication
           setCompanyFormState('completed');
-          setCompanyCanModify(true); // Still allow modifications with warning
+          setCompanyCanModify(true);
           console.log('Company form is completed but can be modified');
         } else if (hasAnyResponses) {
           // Has some responses but not complete
@@ -478,7 +494,7 @@ function App() {
     }
   };
 
-  // ENHANCED: Better tab change handling
+  // ENHANCED: Better tab change handling with unsaved changes warning
   const handleTabChange = (tabId) => {
     // Warn about unsaved changes for company audit
     if (activeTab === 'company' && hasUnsavedChanges) {
@@ -488,10 +504,10 @@ function App() {
       if (!proceed) return;
     }
 
-    // CRITICAL FIX: Only prevent tab change if company is actually fully completed AND user hasn't confirmed
+    // Allow viewing completed company assessments with confirmation
     if (tabId === 'company' && companyFormState === 'completed') {
       const proceed = window.confirm(
-        'Company audit has been completed. Do you want to review or modify responses?'
+        'Company audit has been completed. Do you want to review or modify responses? Note: You can make changes and save them.'
       );
       if (!proceed) {
         return;
@@ -598,7 +614,58 @@ function App() {
     );
   };
 
-  // ENHANCED: Company status indicator with unsaved changes warning
+  // NEW: Employee ID notification for new employees
+  const renderEmployeeIdNotification = () => {
+    if (!showEmployeeIdNotification || currentEmployeeId === null) return null;
+
+    return (
+      <div className="employee-id-notification">
+        <div className="notification-content">
+          <div className="notification-header">
+            <span className="notification-icon">🎯</span>
+            <h3>Your Survey ID</h3>
+            <button 
+              className="notification-close"
+              onClick={() => setShowEmployeeIdNotification(false)}
+            >
+              ×
+            </button>
+          </div>
+          <div className="notification-body">
+            <div className="survey-id-display">
+              <span className="survey-id-label">Survey ID:</span>
+              <span className="survey-id-value">#{currentEmployeeId}</span>
+            </div>
+            <p className="survey-id-instructions">
+              📝 <strong>Important:</strong> Please save this Survey ID: <strong>#{currentEmployeeId}</strong>
+            </p>
+            <p className="survey-id-note">
+              You can use this ID to return and complete your assessment later if needed.
+            </p>
+            <div className="notification-actions">
+              <button 
+                className="btn btn-small btn-primary"
+                onClick={() => {
+                  navigator.clipboard.writeText(currentEmployeeId.toString());
+                  alert('Survey ID copied to clipboard!');
+                }}
+              >
+                📋 Copy ID
+              </button>
+              <button 
+                className="btn btn-small btn-secondary"
+                onClick={() => setShowEmployeeIdNotification(false)}
+              >
+                Got it!
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ENHANCED: Company status indicator with modification support
   const renderCompanyStatusIndicator = () => {
     if (!companyId || companyFormState === 'loading') return null;
 
@@ -642,7 +709,7 @@ function App() {
         )}
         {companyFormState === 'completed' && (
           <span className="modification-notice">
-            (Can be modified)
+            (You can make changes and save them)
           </span>
         )}
       </div>
@@ -726,11 +793,11 @@ function App() {
             {employeeSessionMode === 'new' ? (
               <span className="badge badge-new">
                 ✨ New Employee Assessment
-                {currentEmployeeId !== null && ` - ID: #${currentEmployeeId}`}
+                {currentEmployeeId !== null && ` - Survey ID: #${currentEmployeeId}`}
               </span>
             ) : (
               <span className="badge badge-returning">
-                🔄 Returning Employee #{currentEmployeeId}
+                🔄 Returning Employee - Survey ID: #{currentEmployeeId}
               </span>
             )}
           </div>
@@ -739,6 +806,9 @@ function App() {
             💾 Employee assessments are automatically saved as you complete each question
           </div>
         </div>
+
+        {/* NEW: Employee ID notification */}
+        {renderEmployeeIdNotification()}
 
         <ProgressBar 
           progress={calculateProgress()}
