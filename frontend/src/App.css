@@ -181,6 +181,133 @@ body {
   background: var(--gray-50);
 }
 
+/* ENHANCED: Professional Error Boundary Styling */
+.error-boundary {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-6);
+  background: linear-gradient(135deg, var(--error-50) 0%, var(--error-100) 100%);
+}
+
+.error-boundary .glass-card {
+  max-width: 600px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--error-200);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-2xl);
+  overflow: hidden;
+}
+
+.error-boundary-content {
+  padding: var(--spacing-12);
+  text-align: center;
+}
+
+.error-boundary .error-icon {
+  font-size: 4rem;
+  margin-bottom: var(--spacing-6);
+  color: var(--error-600);
+  animation: pulse 2s infinite;
+}
+
+.error-boundary h2 {
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--gray-800);
+  margin-bottom: var(--spacing-4);
+  letter-spacing: -0.02em;
+}
+
+.error-boundary p {
+  font-size: 1.125rem;
+  color: var(--gray-600);
+  line-height: 1.7;
+  margin-bottom: var(--spacing-8);
+}
+
+.error-actions {
+  display: flex;
+  gap: var(--spacing-4);
+  justify-content: center;
+  margin-bottom: var(--spacing-8);
+  flex-wrap: wrap;
+}
+
+.error-details {
+  margin: var(--spacing-8) 0;
+  text-align: left;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.error-details summary {
+  padding: var(--spacing-4) var(--spacing-5);
+  background: var(--gray-100);
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--gray-700);
+  border-bottom: 1px solid var(--gray-200);
+}
+
+.error-details summary:hover {
+  background: var(--gray-200);
+}
+
+.error-stack {
+  padding: var(--spacing-4);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--gray-700);
+  background: var(--gray-50);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-help {
+  text-align: left;
+  background: var(--blue-50);
+  border: 1px solid var(--blue-200);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-6);
+  margin-top: var(--spacing-6);
+}
+
+.error-help p {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--blue-800);
+  margin-bottom: var(--spacing-3);
+}
+
+.error-help ul {
+  list-style: none;
+  padding: 0;
+}
+
+.error-help li {
+  padding: var(--spacing-2) 0;
+  color: var(--blue-700);
+  font-size: 0.875rem;
+  position: relative;
+  padding-left: var(--spacing-6);
+}
+
+.error-help li::before {
+  content: '•';
+  position: absolute;
+  left: var(--spacing-2);
+  color: var(--blue-600);
+  font-weight: bold;
+}
+
 /* Logo - Professional Design */
 .logo {
   position: absolute;
@@ -689,6 +816,20 @@ body {
   display: flex;
   align-items: center;
   gap: var(--spacing-2);
+}
+
+/* Manual save mode indicator */
+.manual-mode-indicator {
+  background: var(--warning-100);
+  color: var(--warning-700);
+  padding: var(--spacing-1) var(--spacing-3);
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--warning-200);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-1);
 }
 
 /* Tab Navigation - Professional Design */
@@ -2296,6 +2437,16 @@ body {
   box-shadow: var(--shadow-md);
 }
 
+.btn-success {
+  background: linear-gradient(135deg, var(--success-500) 0%, var(--success-600) 100%);
+  color: white;
+}
+
+.btn-success:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -2594,6 +2745,18 @@ body {
     display: flex;
     justify-content: center;
   }
+
+  .error-boundary {
+    padding: var(--spacing-4);
+  }
+
+  .error-boundary-content {
+    padding: var(--spacing-8);
+  }
+
+  .error-actions {
+    flex-direction: column;
+  }
 }
 
 @media (min-width: 1024px) {
@@ -2617,7 +2780,8 @@ body {
   .app-footer,
   .tab-navigation,
   .manual-save-controls,
-  .save-status {
+  .save-status,
+  .error-boundary {
     display: none;
   }
   
