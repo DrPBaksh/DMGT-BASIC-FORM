@@ -7,7 +7,7 @@ import Logo from './components/Logo';
 import ProgressBar from './components/ProgressBar';
 import EmployeeSessionManager from './components/EmployeeSessionManager';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://your-api-gateway-url.amazonaws.com/prod';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://hfrcfsq0v6.execute-api.eu-west-2.amazonaws.com/dev';
 
 function App() {
   const [activeTab, setActiveTab] = useState('company');
@@ -22,27 +22,31 @@ function App() {
     lastModified: null,
     completionPercentage: 0
   });
-  const [responses, setResponses] = useState({});
+  
+  // FIXED: Separate state management for company vs employee responses
+  const [companyResponses, setCompanyResponses] = useState({});
+  const [employeeResponses, setEmployeeResponses] = useState({});
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [saveStatus, setSaveStatus] = useState(''); // 'saving', 'saved', 'error'
   
-  // ENHANCED: Better Employee Session Management
+  // Employee Session Management
   const [employeeSessionMode, setEmployeeSessionMode] = useState(null); // 'new' or 'returning'
   const [currentEmployeeId, setCurrentEmployeeId] = useState(null);
   const [employeeSessionReady, setEmployeeSessionReady] = useState(false);
   const [sessionInitialized, setSessionInitialized] = useState(false);
 
-  // CRITICAL FIX: Company modification tracking
+  // FIXED: Company form state management
   const [companyCanModify, setCompanyCanModify] = useState(true);
-  const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed', 'read_only'
-  const [isInitialLoad, setIsInitialLoad] = useState(true); // Track if this is the first load
+  const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed'
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [unsavedCompanyChanges, setUnsavedCompanyChanges] = useState(false);
 
   const tabs = [
     { id: 'company', label: 'Company Assessment', icon: '🏢' },
     { id: 'employee', label: 'Employee Assessment', icon: '👤' }
   ];
 
-  // ENHANCED: Improved question loading with better dependency management
+  // Load questions based on active tab
   useEffect(() => {
     const shouldLoadQuestions = () => {
       if (!companyId || !activeTab) return false;
@@ -61,17 +65,16 @@ function App() {
     }
   }, [activeTab, companyId, employeeSessionReady, sessionInitialized]);
 
-  // ENHANCED: Reset session state when company ID changes
+  // Reset session state when company ID changes
   useEffect(() => {
     if (companyId) {
       resetEmployeeSession();
       checkCompanyStatus();
-      // Reset company state
       setCompanyFormState('loading');
       setCompanyCanModify(true);
-      setIsInitialLoad(true); // Mark as initial load
+      setIsInitialLoad(true);
+      setUnsavedCompanyChanges(false);
     } else {
-      // Clear everything if no company ID
       setCompanyStatus({ 
         companyCompleted: false, 
         companyInProgress: false,
@@ -82,6 +85,7 @@ function App() {
       });
       setCompanyFormState('new');
       setIsInitialLoad(true);
+      setUnsavedCompanyChanges(false);
     }
   }, [companyId]);
 
@@ -90,7 +94,7 @@ function App() {
     setCurrentEmployeeId(null);
     setEmployeeSessionReady(false);
     setSessionInitialized(false);
-    setResponses({});
+    setEmployeeResponses({});
     setSaveStatus('');
     console.log('Employee session reset');
   };
@@ -116,7 +120,7 @@ function App() {
     setLoading(false);
   };
 
-  // CRITICAL FIX: Better company status checking with proper completion logic
+  // Company status checking
   const checkCompanyStatus = async () => {
     if (!companyId) return;
     
@@ -128,7 +132,6 @@ function App() {
         const status = await response.json();
         console.log('Company status received:', status);
         
-        // Update company status state
         setCompanyStatus({
           companyCompleted: status.companyCompleted || false,
           companyInProgress: status.companyInProgress || false,
@@ -138,33 +141,28 @@ function App() {
           completionPercentage: status.completionPercentage || 0
         });
 
-        // CRITICAL FIX: Proper form state determination
         const hasAnyResponses = status.completionPercentage > 0;
         const isFullyComplete = status.completionPercentage === 100 && status.companyCompleted;
         
         if (isFullyComplete) {
-          // Only mark as completed if it's actually 100% complete
           setCompanyFormState('completed');
-          setCompanyCanModify(true); // Still allow modifications with warning
+          setCompanyCanModify(true);
           console.log('Company form is completed but can be modified');
         } else if (hasAnyResponses) {
-          // Has some responses but not complete
           setCompanyFormState('in_progress');
           setCompanyCanModify(true);
           console.log('Company form is in progress and editable');
           
-          // Load existing responses if this is initial load
           if (isInitialLoad) {
             await loadCompanyResponses();
           }
         } else {
-          // No responses yet
           setCompanyFormState('new');
           setCompanyCanModify(true);
           console.log('New company form - fully editable');
         }
         
-        setIsInitialLoad(false); // Mark initial load as complete
+        setIsInitialLoad(false);
         
       } else {
         console.error('Failed to check company status:', response.status);
@@ -180,7 +178,7 @@ function App() {
     }
   };
 
-  // ENHANCED: Load existing company responses
+  // Load existing company responses
   const loadCompanyResponses = async () => {
     try {
       console.log(`Loading company responses for ID: ${companyId}`);
@@ -189,7 +187,7 @@ function App() {
       if (response.ok) {
         const data = await response.json();
         if (data.found && data.responses) {
-          setResponses(data.responses);
+          setCompanyResponses(data.responses);
           console.log('Company responses loaded:', data.responses);
         }
       }
@@ -205,7 +203,7 @@ function App() {
       if (response.ok) {
         const data = await response.json();
         if (data.found) {
-          setResponses(data.responses || {});
+          setEmployeeResponses(data.responses || {});
           setCurrentEmployeeId(employeeId);
           console.log(`Employee data loaded for ID: ${employeeId}`, data.responses);
           return data.employeeData;
@@ -218,40 +216,111 @@ function App() {
     }
   };
 
-  // CRITICAL FIX: Enhanced saveResponse function with proper completion logic
-  const saveResponse = async (questionId, answer, file = null) => {
-    // CRITICAL FIX: Don't allow saving if employee session not properly initialized
-    if (activeTab === 'employee' && !sessionInitialized) {
+  // FIXED: Handle company responses locally without auto-saving
+  const handleCompanyResponse = (questionId, answer, file = null) => {
+    console.log(`Company response change: ${questionId} = ${answer}`);
+    
+    // Update local state
+    const newResponses = { ...companyResponses, [questionId]: answer };
+    setCompanyResponses(newResponses);
+    setUnsavedCompanyChanges(true);
+    
+    // Handle file metadata if present
+    if (file) {
+      console.log('File metadata for company response:', file);
+      // Store file metadata locally - will be sent when form is saved
+    }
+    
+    console.log('Company form updated locally (not saved yet)');
+  };
+
+  // FIXED: Save company form only when explicitly requested
+  const saveCompanyForm = async () => {
+    if (!companyId) {
+      alert('Please enter a Company ID first');
+      return;
+    }
+
+    if (!unsavedCompanyChanges && companyFormState !== 'new') {
+      alert('No changes to save');
+      return;
+    }
+
+    try {
+      setSaveStatus('saving');
+      
+      const payload = {
+        companyId,
+        formType: 'company',
+        responses: companyResponses,
+        lastModified: new Date().toISOString(),
+        explicitSave: true // Flag to indicate this is an explicit save
+      };
+
+      const response = await fetch(`${API_BASE_URL}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
+
+      const responseData = await response.json();
+      
+      // Update company status based on response
+      if (responseData.completionPercentage !== undefined) {
+        setCompanyStatus(prev => ({
+          ...prev,
+          completionPercentage: responseData.completionPercentage,
+          companyInProgress: responseData.completionPercentage > 0 && responseData.completionPercentage < 100,
+          companyCompleted: responseData.completionPercentage === 100,
+          lastModified: new Date().toISOString()
+        }));
+        
+        setCompanyFormState(responseData.completionPercentage === 100 ? 'completed' : 'in_progress');
+      }
+
+      setSaveStatus('saved');
+      setUnsavedCompanyChanges(false);
+      console.log('Company form saved successfully');
+      
+      setTimeout(() => setSaveStatus(''), 3000);
+
+    } catch (error) {
+      console.error('Error saving company form:', error);
+      setSaveStatus('error');
+      alert(`Error saving company form: ${error.message}`);
+      
+      setTimeout(() => setSaveStatus(''), 5000);
+    }
+  };
+
+  // FIXED: Handle employee responses with auto-save (existing behavior)
+  const handleEmployeeResponse = async (questionId, answer, file = null) => {
+    if (!sessionInitialized) {
       console.warn('Attempted to save response before employee session was initialized');
       return;
     }
 
-    // ENHANCED: Check if company modifications are allowed
-    if (activeTab === 'company' && companyFormState === 'completed') {
-      const confirmModify = window.confirm(
-        'This company assessment has been completed. Are you sure you want to modify it? This will update the last modified date.'
-      );
-      if (!confirmModify) {
-        return;
-      }
-    }
-
-    const newResponses = { ...responses, [questionId]: answer };
-    setResponses(newResponses);
+    const newResponses = { ...employeeResponses, [questionId]: answer };
+    setEmployeeResponses(newResponses);
     setSaveStatus('saving');
 
     try {
       const payload = {
         companyId,
-        formType: activeTab,
+        formType: 'employee',
         responses: newResponses,
         lastModified: new Date().toISOString(),
-        // CRITICAL FIX: Don't send completion signals on single question saves
-        preventAutoComplete: true, // New flag to prevent premature completion
-        singleQuestionUpdate: true // Flag to indicate this is just a single question update
+        preventAutoComplete: true,
+        singleQuestionUpdate: true
       };
 
-      // ENHANCED: Include file metadata if present
       if (file) {
         payload.fileMetadata = {
           questionId,
@@ -259,41 +328,16 @@ function App() {
         };
       }
 
-      // ENHANCED: Proper employee session handling
-      if (activeTab === 'employee') {
-        if (employeeSessionMode === 'returning' && currentEmployeeId !== null) {
+      if (employeeSessionMode === 'returning' && currentEmployeeId !== null) {
+        payload.employeeId = currentEmployeeId;
+      } else if (employeeSessionMode === 'new') {
+        if (currentEmployeeId !== null) {
           payload.employeeId = currentEmployeeId;
-          console.log(`Saving for returning employee ID: ${currentEmployeeId}`);
-        } else if (employeeSessionMode === 'new') {
-          if (currentEmployeeId !== null) {
-            payload.employeeId = currentEmployeeId;
-            console.log(`Saving for new employee with assigned ID: ${currentEmployeeId}`);
-          } else {
-            payload.isNewEmployee = true;
-            console.log('First save for new employee - requesting ID assignment');
-          }
         } else {
-          throw new Error('Employee session not properly initialized');
+          payload.isNewEmployee = true;
         }
       } else {
-        // CRITICAL FIX: Company form handling with proper completion logic
-        payload.allowModification = companyCanModify;
-        payload.formState = companyFormState;
-        
-        // CRITICAL FIX: Only check for completion if explicitly requested
-        const totalQuestions = questions.length;
-        const answeredQuestions = Object.keys(newResponses).filter(key => 
-          newResponses[key] && newResponses[key].trim() !== ''
-        ).length;
-        
-        // Only consider it complete if ALL questions are answered AND user explicitly submits
-        if (totalQuestions > 0 && answeredQuestions === totalQuestions) {
-          payload.potentiallyComplete = true; // Flag for backend to check
-        } else {
-          payload.inProgress = true; // Explicitly mark as in progress
-        }
-        
-        console.log(`Company save: ${answeredQuestions}/${totalQuestions} questions answered`);
+        throw new Error('Employee session not properly initialized');
       }
 
       const response = await fetch(`${API_BASE_URL}/responses`, {
@@ -306,89 +350,40 @@ function App() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        
-        // ENHANCED: Better error handling for different scenarios
-        if (errorData.error) {
-          if (errorData.error.includes('company questionnaire modifications not allowed')) {
-            alert('Company questionnaire modifications are not allowed at this time. Please contact an administrator.');
-            setCompanyCanModify(false);
-            setSaveStatus('error');
-            return;
-          } else if (errorData.error.includes('already completed') && activeTab === 'company') {
-            // CRITICAL FIX: Only show this if it's actually completed, not in progress
-            if (errorData.actuallyComplete === true) {
-              alert('Company questionnaire has been fully completed. You can still modify responses, but changes will update the last modified date.');
-              setCompanyFormState('completed');
-            }
-            // Don't block the save - allow modifications
-          } else {
-            throw new Error(errorData.error);
-          }
-        } else {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
       const responseData = await response.json();
       
-      // ENHANCED: Handle completion status updates properly
-      if (activeTab === 'company') {
-        // Update company status based on response
-        if (responseData.completionPercentage !== undefined) {
-          setCompanyStatus(prev => ({
-            ...prev,
-            completionPercentage: responseData.completionPercentage,
-            companyInProgress: responseData.completionPercentage > 0 && responseData.completionPercentage < 100,
-            companyCompleted: responseData.completionPercentage === 100,
-            lastModified: new Date().toISOString()
-          }));
-        }
-        
-        // CRITICAL FIX: Only update form state if backend explicitly says it's complete
-        if (responseData.explicitlyComplete === true) {
-          setCompanyFormState('completed');
-          console.log('Company form marked as explicitly complete by backend');
-        } else if (responseData.completionPercentage > 0) {
-          setCompanyFormState('in_progress');
-          console.log('Company form is in progress');
-        }
-      }
-
-      // ENHANCED: Capture employee ID for new employees (first save only)
-      if (activeTab === 'employee' && 
-          employeeSessionMode === 'new' && 
+      // Capture employee ID for new employees
+      if (employeeSessionMode === 'new' && 
           currentEmployeeId === null && 
           responseData.employeeId !== undefined) {
         
         setCurrentEmployeeId(responseData.employeeId);
         console.log(`New employee ID assigned: ${responseData.employeeId}`);
-        
-        // Update company status to reflect new employee
         await checkCompanyStatus();
       }
 
       setSaveStatus('saved');
-      console.log('Response saved successfully');
+      console.log('Employee response saved successfully');
       
-      // Auto-clear save status after a moment
       setTimeout(() => setSaveStatus(''), 3000);
 
     } catch (error) {
-      console.error('Error saving response:', error);
+      console.error('Error saving employee response:', error);
       setSaveStatus('error');
-      alert(`Error saving response: ${error.message}. Please try again.`);
+      alert(`Error saving response: ${error.message}`);
       
-      // Auto-clear error status
       setTimeout(() => setSaveStatus(''), 5000);
     }
   };
 
-  // ENHANCED: Better tab change handling
+  // Tab change handling
   const handleTabChange = (tabId) => {
-    // CRITICAL FIX: Only prevent tab change if company is actually fully completed AND user hasn't confirmed
-    if (tabId === 'company' && companyFormState === 'completed') {
+    if (tabId === 'company' && unsavedCompanyChanges) {
       const proceed = window.confirm(
-        'Company questionnaire has been completed. Do you want to review or modify responses?'
+        'You have unsaved changes in the company form. Do you want to continue without saving?'
       );
       if (!proceed) {
         return;
@@ -400,12 +395,8 @@ function App() {
     setCurrentQuestionIndex(0);
     setSaveStatus('');
     
-    // ENHANCED: Better state management when switching tabs
     if (tabId === 'employee') {
-      // Clear responses when switching to employee tab
-      setResponses({});
       setQuestions([]);
-      // Only reset if no session exists
       if (!sessionInitialized) {
         resetEmployeeSession();
       }
@@ -413,34 +404,40 @@ function App() {
       // Company tab
       setEmployeeSessionReady(true);
       setSessionInitialized(true);
-      // Load company responses if they exist
       if (companyFormState === 'in_progress' || companyFormState === 'completed') {
         loadCompanyResponses();
-      } else {
-        setResponses({});
       }
     }
   };
 
   const handleCompanyIdChange = (e) => {
     const newCompanyId = e.target.value;
+    
+    if (unsavedCompanyChanges) {
+      const proceed = window.confirm(
+        'You have unsaved changes in the company form. Do you want to continue without saving?'
+      );
+      if (!proceed) {
+        return;
+      }
+    }
+    
     setCompanyId(newCompanyId);
     console.log(`Company ID changed to: ${newCompanyId}`);
     
-    // Reset everything when company ID changes
     resetEmployeeSession();
     setQuestions([]);
-    setResponses({});
-    setIsInitialLoad(true); // Reset initial load flag
+    setCompanyResponses({});
+    setEmployeeResponses({});
+    setIsInitialLoad(true);
+    setUnsavedCompanyChanges(false);
     
-    // If we're on company tab, set ready immediately
     if (activeTab === 'company') {
       setEmployeeSessionReady(true);
       setSessionInitialized(true);
     }
   };
 
-  // ENHANCED: Enhanced employee session setup with proper state management
   const handleEmployeeSessionSetup = async (mode, employeeId = null) => {
     console.log(`Setting up employee session: mode=${mode}, employeeId=${employeeId}`);
     
@@ -448,10 +445,10 @@ function App() {
     setSaveStatus('');
     
     if (mode === 'new') {
-      setCurrentEmployeeId(null); // Will be assigned on first save
-      setResponses({});
+      setCurrentEmployeeId(null);
+      setEmployeeResponses({});
       setEmployeeSessionReady(true);
-      setSessionInitialized(true); // CRITICAL FIX: Mark session as initialized
+      setSessionInitialized(true);
       console.log('New employee session initialized and ready');
       
     } else if (mode === 'returning' && employeeId !== null) {
@@ -459,7 +456,7 @@ function App() {
       const employeeData = await loadEmployeeData(employeeId);
       if (employeeData) {
         setEmployeeSessionReady(true);
-        setSessionInitialized(true); // CRITICAL FIX: Mark session as initialized
+        setSessionInitialized(true);
         console.log(`Returning employee session loaded for ID: ${employeeId}`);
       } else {
         alert(`No employee found with ID ${employeeId}. Please check your Employee ID or start as a new employee.`);
@@ -470,11 +467,12 @@ function App() {
 
   const calculateProgress = () => {
     if (questions.length === 0) return 0;
-    const answeredQuestions = Object.keys(responses).length;
+    const currentResponses = activeTab === 'company' ? companyResponses : employeeResponses;
+    const answeredQuestions = Object.keys(currentResponses).length;
     return (answeredQuestions / questions.length) * 100;
   };
 
-  // ENHANCED: Enhanced save status indicator with better styling
+  // Save status indicator
   const renderSaveStatus = () => {
     if (!saveStatus) return null;
     
@@ -493,7 +491,7 @@ function App() {
     );
   };
 
-  // ENHANCED: Company status indicator with better logic
+  // Company status indicator
   const renderCompanyStatusIndicator = () => {
     if (!companyId || companyFormState === 'loading') return null;
 
@@ -525,9 +523,14 @@ function App() {
       <div className={`company-status-indicator ${statusInfo.class}`}>
         <span className="status-icon">{statusInfo.icon}</span>
         <span className="status-text">{statusInfo.text}</span>
-        {companyFormState === 'completed' && (
+        {unsavedCompanyChanges && (
+          <span className="unsaved-notice">
+            (You have unsaved changes)
+          </span>
+        )}
+        {companyFormState === 'completed' && !unsavedCompanyChanges && (
           <span className="modification-notice">
-            (Can be modified - changes will update last modified date)
+            (Can be modified)
           </span>
         )}
       </div>
@@ -581,8 +584,8 @@ function App() {
             ) : questions.length > 0 ? (
               <FormRenderer
                 questions={questions}
-                responses={responses}
-                onResponseChange={saveResponse}
+                responses={employeeResponses}
+                onResponseChange={handleEmployeeResponse}
                 onQuestionChange={setCurrentQuestionIndex}
                 companyId={companyId}
                 formType={activeTab}
@@ -614,7 +617,7 @@ function App() {
 
       <main className="app-main">
         <div className="container">
-          {/* Company ID Section with enhanced glass-card styling */}
+          {/* Company ID Section */}
           <div className="company-id-section">
             <div className="glass-card">
               <div className="company-id-header">
@@ -656,6 +659,31 @@ function App() {
                 <>
                   <div className="form-header">
                     {renderSaveStatus()}
+                    {/* FIXED: Add explicit Save button for company form */}
+                    <div className="company-form-actions">
+                      <button
+                        onClick={saveCompanyForm}
+                        disabled={loading || saveStatus === 'saving'}
+                        className={`btn btn-primary save-company-btn ${unsavedCompanyChanges ? 'has-changes' : ''}`}
+                      >
+                        {saveStatus === 'saving' ? (
+                          <>
+                            <span className="btn-spinner">💾</span>
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <span className="btn-icon">💾</span>
+                            {unsavedCompanyChanges ? 'Save Changes' : 'Save Company Form'}
+                          </>
+                        )}
+                      </button>
+                      {unsavedCompanyChanges && (
+                        <span className="unsaved-indicator">
+                          You have unsaved changes
+                        </span>
+                      )}
+                    </div>
                   </div>
                   
                   <ProgressBar 
@@ -674,8 +702,8 @@ function App() {
                       ) : questions.length > 0 ? (
                         <FormRenderer
                           questions={questions}
-                          responses={responses}
-                          onResponseChange={saveResponse}
+                          responses={companyResponses}
+                          onResponseChange={handleCompanyResponse}
                           onQuestionChange={setCurrentQuestionIndex}
                           companyId={companyId}
                           formType={activeTab}
