@@ -10,13 +10,18 @@ const FormRenderer = ({
   formType,
   employeeId,
   employeeMode,
-  sessionInitialized
+  sessionInitialized,
+  onSaveForm // NEW: Add save handler prop
 }) => {
   const [uploadedFiles, setUploadedFiles] = useState({});
   const [currentSection, setCurrentSection] = useState(0);
   const [answeredQuestions, setAnsweredQuestions] = useState(new Set());
   const [uploadingFiles, setUploadingFiles] = useState({});
   const [fileUploadErrors, setFileUploadErrors] = useState({});
+  
+  // NEW: Company form pending changes (not auto-saved)
+  const [pendingCompanyResponses, setPendingCompanyResponses] = useState({});
+  const [isCompanyFormDirty, setIsCompanyFormDirty] = useState(false);
 
   // Group questions by section and maintain proper order
   const groupedQuestions = questions.reduce((groups, question) => {
@@ -37,25 +42,29 @@ const FormRenderer = ({
     )
   }));
 
-  // FIXED: Use the actual QuestionOrder for display numbers while keeping QuestionID for responses
+  // Use the actual QuestionOrder for display numbers while keeping QuestionID for responses
   const getDisplayNumber = (question) => {
     return Number(question.QuestionOrder) || 1;
   };
 
   // Track answered questions
   useEffect(() => {
-    const answered = new Set(Object.keys(responses).filter(key => responses[key] !== ''));
+    // For company forms, use pending responses; for employee forms, use actual responses
+    const currentResponses = formType === 'company' ? 
+      { ...responses, ...pendingCompanyResponses } : responses;
+    
+    const answered = new Set(Object.keys(currentResponses).filter(key => currentResponses[key] !== ''));
     setAnsweredQuestions(answered);
     
     // Notify parent about current progress
     const totalQuestions = questions.length;
     const answeredCount = answered.size;
     onQuestionChange(answeredCount);
-  }, [responses, questions.length, onQuestionChange]);
+  }, [responses, pendingCompanyResponses, questions.length, onQuestionChange, formType]);
 
-  // ENHANCED: Better file handling with S3 upload capability
+  // FIXED: Enhanced file handling with better S3 upload capability
   const handleInputChange = async (questionId, value, file = null) => {
-    console.log(`handleInputChange called with questionId: ${questionId}, value: ${value}, file: ${file ? file.name : 'none'}`);
+    console.log(`handleInputChange called with questionId: ${questionId}, value: ${value}, file: ${file ? file.name : 'none'}`);;
     
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
@@ -96,17 +105,20 @@ const FormRenderer = ({
 
           const uploadResponse = await fetch(`${process.env.REACT_APP_API_URL || 'https://hfrcfsq0v6.execute-api.eu-west-2.amazonaws.com/dev'}/upload`, {
             method: 'POST',
-            body: formData
+            body: formData,
+            // Don't set Content-Type header, let browser set it with boundary for FormData
           });
 
           if (uploadResponse.ok) {
             uploadResult = await uploadResponse.json();
             console.log('File uploaded to S3 successfully:', uploadResult);
           } else {
-            throw new Error('S3 upload failed, using local storage');
+            const errorText = await uploadResponse.text();
+            console.warn('S3 upload response not OK:', uploadResponse.status, errorText);
+            throw new Error(`S3 upload failed (${uploadResponse.status}): ${errorText}`);
           }
         } catch (s3Error) {
-          console.warn('S3 upload failed, falling back to local storage:', s3Error);
+          console.warn('S3 upload failed, falling back to local storage:', s3Error.message);
           // Fallback to mock service
           uploadResult = await mockFileUploadService.uploadFile(
             file, 
@@ -141,24 +153,31 @@ const FormRenderer = ({
         }));
 
         // Create response value that includes both text and file metadata
-        const fileMetadata = {
-          fileName: file.name,
-          fileSize: file.size,
-          fileType: file.type,
-          s3Key: uploadResult.s3Key || null,
-          s3Url: uploadResult.s3Url || null,
-          mockId: uploadResult.mockId || null,
-          storedLocally: uploadResult.storedLocally || false,
-          uploadedAt: new Date().toISOString()
-        };
-
-        // CRITICAL FIX: Combine text answer with file metadata properly
         const combinedValue = value ? `${value} [FILE_ATTACHED: ${file.name}]` : `[FILE_ATTACHED: ${file.name}]`;
         
-        console.log(`Saving response with QuestionID ${questionId}:`, { value: combinedValue, fileMetadata });
+        console.log(`Saving response with QuestionID ${questionId}:`, { value: combinedValue });
         
-        // CRITICAL FIX: Use the actual QuestionID from the CSV (EMP_001, EMP_002, etc.)
-        onResponseChange(questionId, combinedValue, fileMetadata);
+        // FIXED: Handle company vs employee form saving differently
+        if (formType === 'company') {
+          // For company forms, store in pending state (don't auto-save)
+          setPendingCompanyResponses(prev => ({
+            ...prev,
+            [questionId]: combinedValue
+          }));
+          setIsCompanyFormDirty(true);
+        } else {
+          // For employee forms, auto-save as before
+          onResponseChange(questionId, combinedValue, {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type,
+            s3Key: uploadResult.s3Key || null,
+            s3Url: uploadResult.s3Url || null,
+            mockId: uploadResult.mockId || null,
+            storedLocally: uploadResult.storedLocally || false,
+            uploadedAt: new Date().toISOString()
+          });
+        }
 
       } catch (error) {
         console.error('File upload error:', error);
@@ -177,17 +196,56 @@ const FormRenderer = ({
         setUploadingFiles(prev => ({ ...prev, [questionId]: false }));
       }
     } else {
-      // CRITICAL FIX: For regular responses, ensure we use the correct QuestionID
+      // FIXED: Handle regular responses differently for company vs employee forms
       console.log(`Saving regular response with QuestionID ${questionId}: ${value}`);
-      onResponseChange(questionId, value, null);
+      
+      if (formType === 'company') {
+        // For company forms, store in pending state (don't auto-save)
+        setPendingCompanyResponses(prev => ({
+          ...prev,
+          [questionId]: value
+        }));
+        setIsCompanyFormDirty(true);
+      } else {
+        // For employee forms, auto-save as before
+        onResponseChange(questionId, value, null);
+      }
+    }
+  };
+
+  // NEW: Save company form function
+  const saveCompanyForm = async () => {
+    if (!onSaveForm) {
+      console.error('No save handler provided');
+      return;
+    }
+
+    try {
+      // Merge pending responses with existing responses
+      const allResponses = { ...responses, ...pendingCompanyResponses };
+      
+      // Call the save handler with all responses
+      await onSaveForm(allResponses);
+      
+      // Clear pending changes and mark as clean
+      setPendingCompanyResponses({});
+      setIsCompanyFormDirty(false);
+      
+      console.log('Company form saved successfully');
+      
+    } catch (error) {
+      console.error('Error saving company form:', error);
+      throw error; // Re-throw to let parent handle the error display
     }
   };
 
   // Enhanced progress calculation per section
   const getSectionProgress = (sectionQuestions) => {
     const totalQuestions = sectionQuestions.length;
+    const currentResponses = formType === 'company' ? 
+      { ...responses, ...pendingCompanyResponses } : responses;
     const answeredInSection = sectionQuestions.filter(q => 
-      answeredQuestions.has(q.QuestionID)
+      currentResponses[q.QuestionID] && currentResponses[q.QuestionID].trim() !== ''
     ).length;
     return totalQuestions > 0 ? (answeredInSection / totalQuestions) * 100 : 0;
   };
@@ -195,16 +253,21 @@ const FormRenderer = ({
   // Check if question is required and not answered
   const isQuestionIncomplete = (question) => {
     const isRequired = question.Required === 'true';
-    const hasResponse = responses[question.QuestionID] && responses[question.QuestionID].trim() !== '';
+    const currentResponses = formType === 'company' ? 
+      { ...responses, ...pendingCompanyResponses } : responses;
+    const hasResponse = currentResponses[question.QuestionID] && currentResponses[question.QuestionID].trim() !== '';
     return isRequired && !hasResponse;
   };
 
   // ENHANCED: File retrieval logic for returning users
   const getUploadedFileInfo = (questionId) => {
-    // Check if response contains file information
-    const response = responses[questionId];
+    // Check current responses (including pending for company forms)
+    const currentResponses = formType === 'company' ? 
+      { ...responses, ...pendingCompanyResponses } : responses;
+    const response = currentResponses[questionId];
+    
     if (response && response.includes('[FILE_ATTACHED:')) {
-      const fileMatch = response.match(/\\[FILE_ATTACHED: (.+?)\\]/);
+      const fileMatch = response.match(/\[FILE_ATTACHED: (.+?)\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
@@ -216,7 +279,7 @@ const FormRenderer = ({
     
     // Legacy support for old file formats
     if (response && response.includes('[FILE_UPLOADED:')) {
-      const fileMatch = response.match(/\\[FILE_UPLOADED: (.+?)\\]/);
+      const fileMatch = response.match(/\[FILE_UPLOADED: (.+?)\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
@@ -231,15 +294,17 @@ const FormRenderer = ({
   };
 
   const renderQuestion = (question, questionIndex, sectionIndex) => {
-    const value = responses[question.QuestionID] || '';
+    const currentResponses = formType === 'company' ? 
+      { ...responses, ...pendingCompanyResponses } : responses;
+    const value = currentResponses[question.QuestionID] || '';
     const isRequired = question.Required === 'true';
     const allowFileUpload = question.AllowFileUpload === 'true';
-    const isAnswered = answeredQuestions.has(question.QuestionID);
+    const isAnswered = value.trim() !== '';
     const isIncomplete = isQuestionIncomplete(question);
     const isUploading = uploadingFiles[question.QuestionID];
     const uploadError = fileUploadErrors[question.QuestionID];
     
-    // FIXED: Use actual QuestionOrder for display, but keep QuestionID for responses
+    // Use actual QuestionOrder for display, but keep QuestionID for responses
     const displayNumber = getDisplayNumber(question);
     
     // Get file info for display
@@ -277,14 +342,13 @@ const FormRenderer = ({
                 const file = e.target.files[0];
                 if (file) {
                   // Get current text value and combine with file
-                  const currentValue = responses[question.QuestionID] || '';
+                  const currentValue = value || '';
                   const textValue = currentValue
-                    .replace(/\\s*\\[FILE_ATTACHED:.*?\\]\\s*/, '')
-                    .replace(/\\s*\\[FILE_UPLOADED:.*?\\]\\s*/, '')
-                    .replace(/\\s*\\[FILE:.*?\\]\\s*/, '')
+                    .replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
+                    .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
+                    .replace(/\s*\[FILE:.*?\]\s*/, '')
                     .trim();
                   
-                  // CRITICAL FIX: Pass the correct QuestionID
                   await handleInputChange(question.QuestionID, textValue, file);
                 }
               }}
@@ -362,11 +426,11 @@ const FormRenderer = ({
   const renderInputField = (question, value) => {
     const { QuestionType, QuestionTypeDetails } = question;
     
-    // FIXED: Clean up value to remove file metadata for display in input fields
+    // Clean up value to remove file metadata for display in input fields
     const cleanValue = value ? 
-      value.replace(/\\s*\\[FILE_ATTACHED:.*?\\]\\s*/, '')
-           .replace(/\\s*\\[FILE_UPLOADED:.*?\\]\\s*/, '')
-           .replace(/\\s*\\[FILE:.*?\\]\\s*/, '')
+      value.replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
+           .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
+           .replace(/\s*\[FILE:.*?\]\s*/, '')
            .trim() : '';
 
     switch (QuestionType) {
@@ -606,6 +670,12 @@ const FormRenderer = ({
             <span className="answered-count">
               {answeredQuestions.size} of {questions.length} questions answered
             </span>
+            {/* NEW: Show unsaved changes indicator for company forms */}
+            {formType === 'company' && isCompanyFormDirty && (
+              <span className="unsaved-indicator">
+                ⚠️ You have unsaved changes
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -678,6 +748,32 @@ const FormRenderer = ({
         </div>
       )}
 
+      {/* NEW: Company form save button */}
+      {formType === 'company' && (
+        <div className="company-form-actions">
+          <button
+            onClick={saveCompanyForm}
+            disabled={!isCompanyFormDirty}
+            className={`save-company-form-btn ${isCompanyFormDirty ? 'has-changes' : 'no-changes'}`}
+          >
+            {isCompanyFormDirty ? (
+              <>
+                💾 Save Company Form ({Object.keys(pendingCompanyResponses).length} changes)
+              </>
+            ) : (
+              <>
+                ✅ All Changes Saved
+              </>
+            )}
+          </button>
+          {isCompanyFormDirty && (
+            <p className="save-reminder">
+              Remember to save your changes before leaving this page.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Enhanced completion summary */}
       <div className="completion-summary">
         <div className="summary-card glass-card">
@@ -700,6 +796,11 @@ const FormRenderer = ({
             {answeredQuestions.size === questions.length ? (
               <div className="completion-celebration">
                 🎉 <strong>Assessment Complete!</strong> All questions have been answered.
+                {formType === 'company' && isCompanyFormDirty && (
+                  <div className="save-reminder-final">
+                    <strong>Don't forget to save your company form!</strong>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="completion-encouragement">
