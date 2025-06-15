@@ -6,10 +6,10 @@ const Logo = () => {
       <div className="logo-container">
         <div className="logo-icon">
           <div className="logo-gradient">
-            <span className="logo-text">DMGT</span>
+            <div className="logo-text">DMGT</div>
+            <div className="logo-subtitle">Assessment Platform</div>
           </div>
         </div>
-        <div className="logo-subtitle">Assessment Platform</div>
       </div>
     </div>
   );
