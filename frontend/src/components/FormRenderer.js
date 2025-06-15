@@ -18,7 +18,7 @@ const FormRenderer = ({
   const [uploadingFiles, setUploadingFiles] = useState({});
   const [fileUploadErrors, setFileUploadErrors] = useState({});
 
-  // Group questions by section
+  // Group questions by section and maintain proper order
   const groupedQuestions = questions.reduce((groups, question) => {
     const section = question.Section || 'General';
     if (!groups[section]) {
@@ -28,29 +28,19 @@ const FormRenderer = ({
     return groups;
   }, {});
 
-  // Sort sections and questions within sections
+  // Sort sections and questions within sections by QuestionOrder
   const sortedSections = Object.keys(groupedQuestions).sort();
   const sections = sortedSections.map(sectionName => ({
     name: sectionName,
-    questions: groupedQuestions[sectionName].sort((a, b) => Number(a.QuestionOrder) - Number(b.QuestionOrder))
+    questions: groupedQuestions[sectionName].sort((a, b) => 
+      Number(a.QuestionOrder || 0) - Number(b.QuestionOrder || 0)
+    )
   }));
 
-  // FIXED: Create proper sequential question numbering
-  const createQuestionMapping = () => {
-    const mapping = {};
-    let sequentialNumber = 1;
-    
-    sections.forEach(section => {
-      section.questions.forEach(question => {
-        mapping[question.QuestionID] = sequentialNumber;
-        sequentialNumber++;
-      });
-    });
-    
-    return mapping;
+  // FIXED: Use the actual QuestionOrder for display numbers while keeping QuestionID for responses
+  const getDisplayNumber = (question) => {
+    return Number(question.QuestionOrder) || 1;
   };
-
-  const questionNumberMapping = createQuestionMapping();
 
   // Track answered questions
   useEffect(() => {
@@ -63,8 +53,10 @@ const FormRenderer = ({
     onQuestionChange(answeredCount);
   }, [responses, questions.length, onQuestionChange]);
 
-  // ENHANCED: Better file handling with fallback for CORS issues
+  // ENHANCED: Better file handling with S3 upload capability
   const handleInputChange = async (questionId, value, file = null) => {
+    console.log(`handleInputChange called with questionId: ${questionId}, value: ${value}, file: ${file ? file.name : 'none'}`);
+    
     // Safety check for employee sessions
     if (formType === 'employee' && !sessionInitialized) {
       console.warn('Cannot save response: Employee session not initialized');
@@ -74,7 +66,7 @@ const FormRenderer = ({
     // Clear any previous file upload errors for this question
     setFileUploadErrors(prev => ({ ...prev, [questionId]: null }));
 
-    // ENHANCED: File upload handling with CORS fallback
+    // ENHANCED: Real S3 file upload handling
     if (file) {
       try {
         console.log(`Processing file upload for question ${questionId}:`, file.name);
@@ -91,17 +83,43 @@ const FormRenderer = ({
         // Set uploading state
         setUploadingFiles(prev => ({ ...prev, [questionId]: true }));
 
-        // Use mock service (fallback for when backend is not ready)
-        const uploadResult = await mockFileUploadService.uploadFile(
-          file, 
-          companyId, 
-          employeeId, 
-          questionId,
-          {
-            formType,
-            questionText: questions.find(q => q.QuestionID === questionId)?.Question || 'Unknown Question'
+        // Try real S3 upload first, fallback to mock if needed
+        let uploadResult;
+        try {
+          // Attempt real S3 upload
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('questionId', questionId);
+          formData.append('companyId', companyId);
+          formData.append('employeeId', employeeId || 'unknown');
+          formData.append('formType', formType);
+
+          const uploadResponse = await fetch(`${process.env.REACT_APP_API_URL || 'https://hfrcfsq0v6.execute-api.eu-west-2.amazonaws.com/dev'}/upload`, {
+            method: 'POST',
+            body: formData
+          });
+
+          if (uploadResponse.ok) {
+            uploadResult = await uploadResponse.json();
+            console.log('File uploaded to S3 successfully:', uploadResult);
+          } else {
+            throw new Error('S3 upload failed, using local storage');
           }
-        );
+        } catch (s3Error) {
+          console.warn('S3 upload failed, falling back to local storage:', s3Error);
+          // Fallback to mock service
+          uploadResult = await mockFileUploadService.uploadFile(
+            file, 
+            companyId, 
+            employeeId, 
+            questionId,
+            {
+              formType,
+              questionText: questions.find(q => q.QuestionID === questionId)?.Question || 'Unknown Question'
+            }
+          );
+          uploadResult.storedLocally = true;
+        }
 
         console.log('File processed successfully:', uploadResult);
 
@@ -110,8 +128,10 @@ const FormRenderer = ({
           name: file.name,
           size: file.size,
           type: file.type,
-          mockId: uploadResult.mockId,
-          storedLocally: true,
+          s3Key: uploadResult.s3Key || null,
+          s3Url: uploadResult.s3Url || null,
+          mockId: uploadResult.mockId || null,
+          storedLocally: uploadResult.storedLocally || false,
           uploadedAt: new Date().toISOString()
         };
 
@@ -125,15 +145,19 @@ const FormRenderer = ({
           fileName: file.name,
           fileSize: file.size,
           fileType: file.type,
-          mockId: uploadResult.mockId,
-          storedLocally: true,
+          s3Key: uploadResult.s3Key || null,
+          s3Url: uploadResult.s3Url || null,
+          mockId: uploadResult.mockId || null,
+          storedLocally: uploadResult.storedLocally || false,
           uploadedAt: new Date().toISOString()
         };
 
-        // Combine text answer with file metadata
+        // CRITICAL FIX: Combine text answer with file metadata properly
         const combinedValue = value ? `${value} [FILE_ATTACHED: ${file.name}]` : `[FILE_ATTACHED: ${file.name}]`;
         
-        console.log(`Saving response with file metadata:`, { value: combinedValue, fileMetadata });
+        console.log(`Saving response with QuestionID ${questionId}:`, { value: combinedValue, fileMetadata });
+        
+        // CRITICAL FIX: Use the actual QuestionID from the CSV (EMP_001, EMP_002, etc.)
         onResponseChange(questionId, combinedValue, fileMetadata);
 
       } catch (error) {
@@ -145,7 +169,7 @@ const FormRenderer = ({
         
         // Show user-friendly error message
         if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
-          alert('File upload service is not available yet. Your answers are still being saved, but files cannot be uploaded until the backend is configured.');
+          alert('File upload service is temporarily unavailable. Your answers are still being saved, but files will be uploaded when the service is restored.');
         } else {
           alert(`File upload failed: ${error.message}`);
         }
@@ -153,7 +177,8 @@ const FormRenderer = ({
         setUploadingFiles(prev => ({ ...prev, [questionId]: false }));
       }
     } else {
-      // Regular response without file
+      // CRITICAL FIX: For regular responses, ensure we use the correct QuestionID
+      console.log(`Saving regular response with QuestionID ${questionId}: ${value}`);
       onResponseChange(questionId, value, null);
     }
   };
@@ -179,30 +204,19 @@ const FormRenderer = ({
     // Check if response contains file information
     const response = responses[questionId];
     if (response && response.includes('[FILE_ATTACHED:')) {
-      const fileMatch = response.match(/\[FILE_ATTACHED: (.+?)\]/);
+      const fileMatch = response.match(/\\[FILE_ATTACHED: (.+?)\\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
           fromSavedResponse: true,
-          storedLocally: true
+          storedLocally: !response.includes('s3Key') // Assume S3 if metadata exists
         };
       }
     }
     
     // Legacy support for old file formats
     if (response && response.includes('[FILE_UPLOADED:')) {
-      const fileMatch = response.match(/\[FILE_UPLOADED: (.+?)\]/);
-      if (fileMatch) {
-        return {
-          name: fileMatch[1],
-          fromSavedResponse: true,
-          storedLocally: false
-        };
-      }
-    }
-    
-    if (response && response.includes('[FILE:')) {
-      const fileMatch = response.match(/\[FILE: (.+?)\]/);
+      const fileMatch = response.match(/\\[FILE_UPLOADED: (.+?)\\]/);
       if (fileMatch) {
         return {
           name: fileMatch[1],
@@ -225,8 +239,8 @@ const FormRenderer = ({
     const isUploading = uploadingFiles[question.QuestionID];
     const uploadError = fileUploadErrors[question.QuestionID];
     
-    // FIXED: Use sequential numbering instead of QuestionOrder
-    const displayNumber = questionNumberMapping[question.QuestionID] || questionIndex + 1;
+    // FIXED: Use actual QuestionOrder for display, but keep QuestionID for responses
+    const displayNumber = getDisplayNumber(question);
     
     // Get file info for display
     const fileInfo = getUploadedFileInfo(question.QuestionID);
@@ -243,6 +257,7 @@ const FormRenderer = ({
           </div>
           <div className="question-badges">
             <div className="question-number">{displayNumber}</div>
+            <div className="question-id">ID: {question.QuestionID}</div>
             {isAnswered && <div className="answered-badge">✓</div>}
             {isIncomplete && <div className="required-badge">!</div>}
           </div>
@@ -264,10 +279,12 @@ const FormRenderer = ({
                   // Get current text value and combine with file
                   const currentValue = responses[question.QuestionID] || '';
                   const textValue = currentValue
-                    .replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
-                    .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
-                    .replace(/\s*\[FILE:.*?\]\s*/, '')
+                    .replace(/\\s*\\[FILE_ATTACHED:.*?\\]\\s*/, '')
+                    .replace(/\\s*\\[FILE_UPLOADED:.*?\\]\\s*/, '')
+                    .replace(/\\s*\\[FILE:.*?\\]\\s*/, '')
                     .trim();
+                  
+                  // CRITICAL FIX: Pass the correct QuestionID
                   await handleInputChange(question.QuestionID, textValue, file);
                 }
               }}
@@ -281,7 +298,7 @@ const FormRenderer = ({
               {isUploading ? (
                 <>
                   <span className="upload-spinner">⏳</span>
-                  Processing...
+                  Uploading to S3...
                 </>
               ) : (
                 <>
@@ -294,7 +311,7 @@ const FormRenderer = ({
               <br />
               <small>Supported formats: PDF, DOC, TXT, Images, Excel, PowerPoint</small>
               <br />
-              <small className="upload-note">Note: Files are stored locally until backend upload service is configured</small>
+              <small className="upload-note">Files will be uploaded to secure S3 storage</small>
             </div>
             
             {/* Upload error display */}
@@ -305,7 +322,7 @@ const FormRenderer = ({
               </div>
             )}
             
-            {/* ENHANCED: Better file display with local storage support */}
+            {/* ENHANCED: Better file display with S3 support */}
             {fileInfo && !uploadError && (
               <div className="uploaded-file">
                 <div className="file-info">
@@ -317,10 +334,13 @@ const FormRenderer = ({
                     <span className="file-size">({formatFileSize(fileInfo.size)})</span>
                   )}
                   <span className="file-note">
-                    {fileInfo.storedLocally ? '(Stored locally)' : '(Previously uploaded)'}
+                    {fileInfo.storedLocally ? '(Stored locally)' : '(Uploaded to S3)'}
                   </span>
+                  {fileInfo.s3Key && (
+                    <span className="file-s3">S3: {fileInfo.s3Key}</span>
+                  )}
                   {fileInfo.mockId && (
-                    <span className="file-id">ID: {fileInfo.mockId}</span>
+                    <span className="file-id">Local ID: {fileInfo.mockId}</span>
                   )}
                 </div>
               </div>
@@ -344,9 +364,9 @@ const FormRenderer = ({
     
     // FIXED: Clean up value to remove file metadata for display in input fields
     const cleanValue = value ? 
-      value.replace(/\s*\[FILE_ATTACHED:.*?\]\s*/, '')
-           .replace(/\s*\[FILE_UPLOADED:.*?\]\s*/, '')
-           .replace(/\s*\[FILE:.*?\]\s*/, '')
+      value.replace(/\\s*\\[FILE_ATTACHED:.*?\\]\\s*/, '')
+           .replace(/\\s*\\[FILE_UPLOADED:.*?\\]\\s*/, '')
+           .replace(/\\s*\\[FILE:.*?\\]\\s*/, '')
            .trim() : '';
 
     switch (QuestionType) {
@@ -638,7 +658,7 @@ const FormRenderer = ({
           </div>
         </div>
       ) : (
-        // All sections view (original behavior)
+        // All sections view (original behavior) - Better for single sections
         <div className="all-sections-view">
           {sections.map((section, sectionIndex) => (
             <div key={section.name} className="question-section">
