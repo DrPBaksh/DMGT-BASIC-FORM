@@ -16,7 +16,7 @@ ENV_FILE="$FRONTEND_DIR/.env.production"
 # Configuration with defaults
 MODE="deploy"
 ENVIRONMENT=${ENVIRONMENT:-prod}
-REGION=${AWS_REGION:-us-east-1}
+REGION=${AWS_REGION:-eu-west-2}
 OWNER_NAME=${OWNER_NAME:-$(whoami)}
 VERBOSE=${VERBOSE:-false}
 DRY_RUN=${DRY_RUN:-false}
@@ -219,7 +219,7 @@ show_usage() {
     echo -e "  --frontend-only       : Builds and deploys only the React frontend"
     echo -e "  --apply-sunday-fixes  : Apply critical Sunday fixes (Lambda config + code)"
     echo -e "  --environment=ENV     : Set environment (default: prod)"
-    echo -e "  --region=REGION       : Set AWS region (default: us-east-1)"
+    echo -e "  --region=REGION       : Set AWS region (default: eu-west-2)"
     echo -e "  --owner=NAME          : Set owner name (default: current username)"
     echo -e "  --verbose             : Enable verbose logging"
     echo -e "  --dry-run             : Show commands without executing"
