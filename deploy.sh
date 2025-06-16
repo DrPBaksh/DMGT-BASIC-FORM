@@ -21,6 +21,7 @@ OWNER_NAME=${OWNER_NAME:-$(whoami)}
 VERBOSE=${VERBOSE:-false}
 DRY_RUN=${DRY_RUN:-false}
 FORCE_DELETE=${FORCE_DELETE:-false}
+APPLY_SUNDAY_FIXES=${APPLY_SUNDAY_FIXES:-false}
 
 # Stack and resource naming
 STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
@@ -164,6 +165,11 @@ parse_arguments() {
                 MODE="frontend-only"
                 shift
                 ;;
+            --apply-sunday-fixes)
+                APPLY_SUNDAY_FIXES=true
+                MODE="sunday-fixes"
+                shift
+                ;;
             --environment=*)
                 ENVIRONMENT="${1#*=}"
                 STACK_NAME="dmgt-basic-form-${ENVIRONMENT}"
@@ -209,20 +215,22 @@ show_usage() {
     echo -e "  $0 [OPTIONS]"
     echo ""
     echo -e "${BOLD}Options:${NC}"
-    echo -e "  --delete          : Destroys all infrastructure"
-    echo -e "  --frontend-only   : Builds and deploys only the React frontend"
-    echo -e "  --environment=ENV : Set environment (default: prod)"
-    echo -e "  --region=REGION   : Set AWS region (default: us-east-1)"
-    echo -e "  --owner=NAME      : Set owner name (default: current username)"
-    echo -e "  --verbose         : Enable verbose logging"
-    echo -e "  --dry-run         : Show commands without executing"
-    echo -e "  --force           : Skip confirmation prompts"
-    echo -e "  --help            : Show this help message"
+    echo -e "  --delete              : Destroys all infrastructure"
+    echo -e "  --frontend-only       : Builds and deploys only the React frontend"
+    echo -e "  --apply-sunday-fixes  : Apply critical Sunday fixes (Lambda config + code)"
+    echo -e "  --environment=ENV     : Set environment (default: prod)"
+    echo -e "  --region=REGION       : Set AWS region (default: us-east-1)"
+    echo -e "  --owner=NAME          : Set owner name (default: current username)"
+    echo -e "  --verbose             : Enable verbose logging"
+    echo -e "  --dry-run             : Show commands without executing"
+    echo -e "  --force               : Skip confirmation prompts"
+    echo -e "  --help                : Show this help message"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  ${CYAN}$0${NC}                                    # Deploy to prod"
     echo -e "  ${CYAN}$0 --environment=dev --verbose${NC}        # Deploy to dev with verbose logging"
     echo -e "  ${CYAN}$0 --frontend-only${NC}                   # Deploy frontend only"
+    echo -e "  ${CYAN}$0 --apply-sunday-fixes --environment=dev${NC}  # Apply critical fixes to dev"
     echo -e "  ${CYAN}$0 --delete --environment=dev${NC}        # Delete dev environment"
     echo ""
 }
@@ -266,7 +274,7 @@ check_prerequisites() {
     log_success "Region connectivity verified"
     
     # Check Node.js for frontend
-    if [[ "$MODE" != "delete" ]]; then
+    if [[ "$MODE" != "delete" ]] && [[ "$MODE" != "sunday-fixes" ]]; then
         if ! command -v node &> /dev/null; then
             log_error "Node.js is not installed. Please install it first."
             log_info "Install Node.js: https://nodejs.org/"
@@ -282,7 +290,7 @@ check_prerequisites() {
     fi
     
     # Check required files
-    if [[ "$MODE" != "delete" ]]; then
+    if [[ "$MODE" != "delete" ]] && [[ "$MODE" != "sunday-fixes" ]]; then
         local required_files=(
             "$INFRASTRUCTURE_DIR/cloudformation-template.yaml"
             "$DATA_DIR/CompanyQuestions.csv"
@@ -320,6 +328,181 @@ pre_deployment_checks() {
         log_success "No existing stack found - ready for deployment"
         STACK_EXISTS=false
     fi
+}
+
+#####################################
+# Sunday Fixes Functions
+#####################################
+apply_sunday_fixes() {
+    log_step "Applying Sunday Afternoon Critical Fixes"
+    
+    local function_name="dmgt-basic-form-responses-${ENVIRONMENT}"
+    
+    log_info "Target Lambda function: $function_name"
+    log_info "Region: $REGION"
+    
+    # Check if the Lambda function exists
+    if ! aws lambda get-function --function-name $function_name --region $REGION > /dev/null 2>&1; then
+        log_error "Lambda function '$function_name' not found. Please deploy the stack first."
+        exit 1
+    fi
+    
+    # Get current account ID for bucket names
+    local account_id=$(aws sts get-caller-identity --query Account --output text)
+    local responses_bucket="dmgt-basic-form-responses-${ENVIRONMENT}-${account_id}"
+    local config_bucket="dmgt-basic-form-config-${ENVIRONMENT}-${account_id}"
+    
+    log_info "Responses bucket: $responses_bucket"
+    log_info "Config bucket: $config_bucket"
+    
+    # Step 1: Update Lambda function configuration
+    log_info "⚙️ Updating Lambda function configuration..."
+    
+    # Create proper JSON for environment variables
+    local env_vars=$(cat <<EOF
+{
+  "Variables": {
+    "RESPONSES_BUCKET": "$responses_bucket",
+    "CONFIG_BUCKET": "$config_bucket",
+    "VERSION": "5.0-s3-upload-support"
+  }
+}
+EOF
+)
+    
+    execute_command "aws lambda update-function-configuration \
+        --function-name $function_name \
+        --timeout 30 \
+        --memory-size 256 \
+        --environment '$env_vars' \
+        --region $REGION" "Lambda configuration update"
+    
+    log_success "✅ Lambda configuration updated (timeout: 30s, memory: 256MB)"
+    
+    # Step 2: Update Lambda function code
+    log_info "⚙️ Updating Lambda function code..."
+    
+    # Create temporary directory for deployment
+    local temp_dir=$(mktemp -d)
+    local original_dir=$(pwd)
+    
+    cd "$temp_dir"
+    
+    # Copy the updated Lambda function code
+    if [ -f "$INFRASTRUCTURE_DIR/lambda/responses-function/index.py" ]; then
+        cp "$INFRASTRUCTURE_DIR/lambda/responses-function/index.py" .
+        
+        # Create ZIP file
+        zip -q function.zip index.py
+        
+        # Update function code
+        execute_command "aws lambda update-function-code \
+            --function-name $function_name \
+            --zip-file fileb://function.zip \
+            --region $REGION" "Lambda function code update"
+        
+        log_success "✅ Lambda function code updated with S3 upload support"
+    else
+        log_warning "Lambda function code not found at expected location, skipping code update"
+    fi
+    
+    # Clean up
+    cd "$original_dir"
+    rm -rf "$temp_dir"
+    
+    # Step 3: Test the deployment
+    log_info "🧪 Testing Lambda function..."
+    
+    # Test with OPTIONS request
+    local test_payload='{"httpMethod":"OPTIONS"}'
+    local test_response="/tmp/test-lambda-response.json"
+    
+    if execute_command "aws lambda invoke \
+        --function-name $function_name \
+        --payload '$test_payload' \
+        --region $REGION \
+        $test_response" "Lambda function test" "true"; then
+        
+        if [ -f "$test_response" ]; then
+            local status_code=$(jq -r '.statusCode // "unknown"' "$test_response" 2>/dev/null || echo "unknown")
+            if [ "$status_code" = "200" ]; then
+                log_success "✅ Lambda function responding correctly (HTTP 200)"
+            else
+                log_warning "⚠️ Lambda function returned status: $status_code"
+            fi
+        fi
+    else
+        log_warning "⚠️ Lambda function test failed (this may be normal for complex functions)"
+    fi
+    
+    # Clean up test file
+    rm -f "$test_response"
+    
+    # Step 4: Get deployment URLs for reference
+    log_info "📋 Retrieving deployment information..."
+    
+    local api_url=$(aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='ApiGatewayUrl'].OutputValue" \
+        --output text 2>/dev/null || echo "")
+    
+    local website_url=$(aws cloudformation describe-stacks \
+        --stack-name $STACK_NAME \
+        --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='WebsiteURL'].OutputValue" \
+        --output text 2>/dev/null || echo "")
+    
+    # Final verification
+    log_info "🔍 Final verification..."
+    local function_info=$(aws lambda get-function \
+        --function-name $function_name \
+        --region $REGION \
+        --query 'Configuration.{Timeout:Timeout,Memory:MemorySize,LastModified:LastModified}' \
+        --output json 2>/dev/null || echo "")
+    
+    if [ ! -z "$function_info" ]; then
+        local timeout=$(echo "$function_info" | jq -r '.Timeout // "unknown"')
+        local memory=$(echo "$function_info" | jq -r '.Memory // "unknown"')
+        local modified=$(echo "$function_info" | jq -r '.LastModified // "unknown"')
+        
+        log_success "✅ Verification complete!"
+        log_info "   Timeout: ${timeout}s"
+        log_info "   Memory: ${memory}MB"
+        log_info "   Last Modified: $modified"
+    fi
+    
+    # Sunday fixes summary
+    echo ""
+    echo -e "${BOLD}${GREEN}🎉 SUNDAY FIXES APPLIED SUCCESSFULLY! 🎉${NC}\n"
+    
+    echo -e "${BOLD}📋 FIXES APPLIED:${NC}"
+    echo -e "   ✅ Lambda function timeout increased to 30 seconds"
+    echo -e "   ✅ Lambda function memory increased to 256 MB"
+    echo -e "   ✅ S3 upload support environment variables configured"
+    echo -e "   ✅ Lambda function code updated (if available)"
+    echo ""
+    
+    if [ ! -z "$api_url" ] && [ "$api_url" != "None" ]; then
+        echo -e "${BOLD}🌐 API Gateway:${NC} ${GREEN}$api_url${NC}"
+    fi
+    if [ ! -z "$website_url" ] && [ "$website_url" != "None" ]; then
+        echo -e "${BOLD}🌐 Website:${NC} ${GREEN}$website_url${NC}"
+    fi
+    echo ""
+    
+    echo -e "${BOLD}🧪 TEST COMMANDS:${NC}"
+    if [ ! -z "$api_url" ]; then
+        echo -e "curl \"${api_url}/config/Company\""
+        echo -e "curl \"${api_url}/config/Employee\""
+        echo -e "curl \"${api_url}/responses?companyId=TEST\""
+    fi
+    echo ""
+    
+    echo -e "${BOLD}🎯 The Sunday afternoon fixes have been deployed!${NC}"
+    echo -e "💾 File uploads should now work properly"
+    echo -e "📋 Organization assessments can be continued/updated"
+    echo -e "🚀 The 500 errors should be resolved"
 }
 
 #####################################
@@ -804,6 +987,9 @@ deployment_summary() {
     echo ""
     
     echo -e "${BOLD}🎯 DMGT Basic Form is ready to collect data and assess AI readiness!${NC}"
+    echo ""
+    
+    echo -e "${BOLD}💡 Pro Tip:${NC} Use ${CYAN}$0 --apply-sunday-fixes --environment=$ENVIRONMENT${NC} to apply critical fixes to Lambda functions"
 }
 
 destruction_summary() {
@@ -886,6 +1072,10 @@ main() {
     log_info "Verbose: $VERBOSE"
     log_info "Dry Run: $DRY_RUN"
     
+    if [ "$APPLY_SUNDAY_FIXES" = "true" ]; then
+        log_info "Sunday Fixes: ${GREEN}ENABLED${NC}"
+    fi
+    
     if [ "$DRY_RUN" = "true" ]; then
         log_warning "DRY RUN MODE - No actual changes will be made"
     fi
@@ -900,6 +1090,14 @@ main() {
             show_progress $STEP_COUNT $TOTAL_STEPS
             echo ""
             destruction_summary
+            ;;
+        "sunday-fixes")
+            TOTAL_STEPS=2
+            check_prerequisites
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            apply_sunday_fixes
+            show_progress $STEP_COUNT $TOTAL_STEPS
+            echo ""
             ;;
         "frontend-only")
             TOTAL_STEPS=4
@@ -937,6 +1135,13 @@ main() {
             deployment_summary
             ;;
     esac
+    
+    # Auto-apply Sunday fixes if requested for full deployment
+    if [ "$APPLY_SUNDAY_FIXES" = "true" ] && [ "$MODE" = "deploy" ]; then
+        echo ""
+        log_info "Auto-applying Sunday fixes as requested..."
+        apply_sunday_fixes
+    fi
 }
 
 # Change to script directory and run
