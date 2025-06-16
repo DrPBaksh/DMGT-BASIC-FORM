@@ -1,500 +1,698 @@
-  # Lambda Function for Form Responses - FIXED VERSION
-  DMGTFormResponsesLambda:
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DMGT Basic Form - Complete infrastructure with enhanced file upload support'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+
+Resources:
+  # S3 Bucket for Form Configuration (CSV files) 
+  DMGTFormConfigBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-config-${Environment}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for Form Responses
+  DMGTFormResponsesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-responses-${Environment}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+            AllowedOrigins:
+              - "*"
+            MaxAge: 3000
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for Static Website Hosting
+  DMGTFormWebsiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub 'dmgt-basic-form-website-${Environment}-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket Policy for Website
+  DMGTFormWebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DMGTFormWebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${DMGTFormWebsiteBucket}/*'
+
+  # IAM Role for Lambda Functions
+  DMGTFormLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'dmgt-basic-form-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetObjectAttributes
+                Resource:
+                  - !Sub 'arn:aws:s3:::${DMGTFormConfigBucket}'
+                  - !Sub 'arn:aws:s3:::${DMGTFormConfigBucket}/*'
+                  - !Sub 'arn:aws:s3:::${DMGTFormResponsesBucket}'
+                  - !Sub 'arn:aws:s3:::${DMGTFormResponsesBucket}/*'
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Main Lambda Function for all API operations - ENHANCED VERSION
+  DMGTFormMainLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub 'dmgt-basic-form-responses-${Environment}'
+      FunctionName: !Sub 'dmgt-basic-form-main-${Environment}'
       Runtime: python3.11
       Handler: index.lambda_handler
       Role: !GetAtt DMGTFormLambdaRole.Arn
-      Timeout: 30  # FIXED: Increased from 3 to 30 seconds for S3 operations
-      MemorySize: 256  # FIXED: Increased from 128 to 256 MB
+      Timeout: 30
+      MemorySize: 256
       Environment:
         Variables:
           CONFIG_BUCKET: !Ref DMGTFormConfigBucket
           RESPONSES_BUCKET: !Ref DMGTFormResponsesBucket
-          VERSION: "5.0-s3-upload-support"
+          VERSION: "6.0-enhanced-upload"
       Code:
         ZipFile: |
           import json
           import boto3
+          import os
           import base64
           import uuid
-          from datetime import datetime, timedelta
-          from urllib.parse import unquote
+          from datetime import datetime
+          from botocore.exceptions import ClientError
 
-          # Initialize AWS clients
-          s3_client = boto3.client('s3')
-          dynamodb = boto3.resource('dynamodb')
-
-          # Configuration
-          RESPONSES_BUCKET = 'dmgt-basic-form-responses-dev-530545734605'
-          REGION = 'eu-west-2'
+          s3 = boto3.client('s3')
 
           def lambda_handler(event, context):
-              """
-              Enhanced Lambda handler for DMGT Basic Form
-              Handles both form responses AND file uploads with proper error handling
-              """
-              
-              print(f"Event: {json.dumps(event)}")
-              
-              # CORS headers
-              cors_headers = {
-                  'Access-Control-Allow-Origin': '*',
-                  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-                  'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT'
-              }
-              
               try:
-                  # Handle preflight OPTIONS requests
-                  if event.get('httpMethod') == 'OPTIONS':
-                      return {
-                          'statusCode': 200,
-                          'headers': cors_headers,
-                          'body': json.dumps({'message': 'CORS preflight'})
-                      }
+                  http_method = event['httpMethod']
+                  path = event['path']
+                  path_params = event.get('pathParameters') or {}
+                  query_params = event.get('queryStringParameters') or {}
                   
-                  # Handle GET requests (status checks)
-                  if event.get('httpMethod') == 'GET':
-                      return handle_get_request(event, cors_headers)
+                  print(f"[v6.0] {http_method} {path}")
                   
-                  # Parse request body for POST requests
-                  body = event.get('body', '{}')
-                  if isinstance(body, str):
+                  # Handle CORS preflight
+                  if http_method == 'OPTIONS':
+                      return cors_response()
+                  
+                  # Parse body for POST requests
+                  body = {}
+                  if http_method == 'POST' and event.get('body'):
                       try:
-                          body = json.loads(body)
+                          body = json.loads(event['body'])
                       except json.JSONDecodeError:
-                          body = {}
+                          pass
                   
-                  # Route based on action or existing functionality
+                  # Route requests based on path and action
                   action = body.get('action')
                   
                   if action == 'getPresignedUrl':
-                      return handle_presigned_url_request(body, cors_headers)
+                      return handle_presigned_url(body)
                   elif action == 'uploadFile':
-                      return handle_file_upload_request(body, cors_headers)
-                  elif action == 'getCompany':
-                      return handle_get_company_request(body, cors_headers)
-                  elif action == 'getEmployee': 
-                      return handle_get_employee_request(body, cors_headers)
+                      return handle_file_upload(body)
+                  elif path.startswith('/company-status/'):
+                      return get_company_status(path_params.get('companyId'))
+                  elif path.startswith('/employee-list/'):
+                      return get_employee_list(path_params.get('companyId'))
+                  elif path.startswith('/employee-data/'):
+                      company_id = path_params.get('companyId')
+                      employee_id = path_params.get('employeeId')
+                      return get_employee_data(company_id, employee_id)
+                  elif path == '/save-company' and http_method == 'POST':
+                      return save_company_form(event)
+                  elif path == '/save-employee' and http_method == 'POST':
+                      return save_employee_form(event)
                   else:
-                      # Default: Handle form response submission
-                      return handle_form_response(event, body, cors_headers)
+                      return error_response(404, 'Endpoint not found')
                       
               except Exception as e:
-                  print(f"Error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': str(e)})
-                  }
+                  print(f"[v6.0] Error: {str(e)}")
+                  return error_response(500, str(e))
 
-          def handle_get_request(event, cors_headers):
-              """Handle GET requests for company status"""
-              try:
-                  query_params = event.get('queryStringParameters') or {}
-                  company_id = query_params.get('companyId')
-                  
-                  if not company_id:
-                      return {
-                          'statusCode': 400,
-                          'headers': cors_headers,
-                          'body': json.dumps({'error': 'Missing companyId parameter'})
-                      }
-                  
-                  # Get company status
-                  company_status = get_company_status(company_id)
-                  
-                  return {
-                      'statusCode': 200,
-                      'headers': cors_headers,
-                      'body': json.dumps(company_status)
+          def cors_response():
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+                      'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT'
                   }
-                  
-              except Exception as e:
-                  print(f"GET request error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': str(e)})
-                  }
+              }
 
-          def get_company_status(company_id):
-              """Get comprehensive company status including completion and employee info"""
-              try:
-                  # Check for company responses
-                  company_key = f"company-responses/{company_id}.json"
-                  company_completed = False
-                  company_in_progress = False
-                  company_completion_percentage = 0
-                  company_last_modified = None
-                  
-                  try:
-                      response = s3_client.get_object(Bucket=RESPONSES_BUCKET, Key=company_key)
-                      content = response['Body'].read().decode('utf-8')
-                      company_data = json.loads(content)
-                      
-                      company_completion_percentage = company_data.get('completionPercentage', 0)
-                      company_completed = company_data.get('completed', False)
-                      company_in_progress = company_completion_percentage > 0 and not company_completed
-                      company_last_modified = company_data.get('lastModified')
-                      
-                  except s3_client.exceptions.NoSuchKey:
-                      pass
-                  
-                  # Check for employee responses
-                  employee_ids = []
-                  employee_count = 0
-                  
-                  try:
-                      response = s3_client.list_objects_v2(
-                          Bucket=RESPONSES_BUCKET,
-                          Prefix=f"employee-responses/{company_id}/"
-                      )
-                      
-                      if 'Contents' in response:
-                          for obj in response['Contents']:
-                              key = obj['Key']
-                              try:
-                                  filename = key.split('/')[-1]
-                                  employee_id_str = filename.replace('.json', '')
-                                  employee_id = int(employee_id_str)
-                                  employee_ids.append(employee_id)
-                              except (ValueError, IndexError):
-                                  continue
-                          
-                          employee_count = len(employee_ids)
-                          employee_ids.sort()
-                  
-                  except Exception as e:
-                      print(f"Error listing employee responses: {str(e)}")
-                  
-                  return {
-                      'companyCompleted': company_completed,
-                      'companyInProgress': company_in_progress,
-                      'completionPercentage': company_completion_percentage,
-                      'lastModified': company_last_modified,
-                      'employeeCount': employee_count,
-                      'employeeIds': employee_ids
-                  }
-                  
-              except Exception as e:
-                  print(f"Error getting company status: {str(e)}")
-                  return {
-                      'companyCompleted': False,
-                      'companyInProgress': False,
-                      'completionPercentage': 0,
-                      'lastModified': None,
-                      'employeeCount': 0,
-                      'employeeIds': []
-                  }
+          def error_response(status_code, message):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+                      'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT'
+                  },
+                  'body': json.dumps({'error': message})
+              }
 
-          def handle_presigned_url_request(body, cors_headers):
-              """Generate presigned URL for direct S3 upload"""
+          def success_response(data):
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+                      'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT'
+                  },
+                  'body': json.dumps(data)
+              }
+
+          def handle_presigned_url(body):
+              """Generate presigned URL for S3 upload"""
               try:
                   file_name = body.get('fileName')
-                  content_type = body.get('contentType') 
+                  content_type = body.get('contentType')
                   s3_key = body.get('s3Key')
-                  bucket = body.get('bucket', RESPONSES_BUCKET)
-                  method = body.get('method', 'PUT')
-                  expires = body.get('expires', 300)
+                  bucket = body.get('bucket', os.environ['RESPONSES_BUCKET'])
                   
                   if not all([file_name, content_type, s3_key]):
-                      raise ValueError("Missing required parameters: fileName, contentType, s3Key")
+                      return error_response(400, 'Missing required parameters')
                   
-                  # Generate presigned URL
-                  presigned_url = s3_client.generate_presigned_url(
+                  presigned_url = s3.generate_presigned_url(
                       'put_object',
                       Params={
                           'Bucket': bucket,
                           'Key': s3_key,
                           'ContentType': content_type
                       },
-                      ExpiresIn=expires
+                      ExpiresIn=300
                   )
                   
-                  return {
-                      'statusCode': 200,
-                      'headers': cors_headers,
-                      'body': json.dumps({
-                          'presignedUrl': presigned_url,
-                          's3Key': s3_key,
-                          'bucket': bucket,
-                          'expires': expires
-                      })
-                  }
+                  return success_response({
+                      'presignedUrl': presigned_url,
+                      's3Key': s3_key,
+                      'bucket': bucket
+                  })
                   
               except Exception as e:
-                  print(f"Presigned URL error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': f'Failed to generate presigned URL: {str(e)}'})
-                  }
+                  return error_response(500, f'Failed to generate presigned URL: {str(e)}')
 
-          def handle_file_upload_request(body, cors_headers):
-              """Handle direct file upload via Lambda (fallback method)"""
+          def handle_file_upload(body):
+              """Handle direct file upload"""
               try:
-                  file_data = body.get('fileData')  # base64 encoded
+                  file_data = body.get('fileData')
                   file_name = body.get('fileName')
-                  content_type = body.get('contentType')
                   s3_key = body.get('s3Key')
-                  bucket = body.get('bucket', RESPONSES_BUCKET)
-                  company_id = body.get('companyId')
-                  employee_id = body.get('employeeId')
-                  question_id = body.get('questionId')
-                  metadata = body.get('metadata', {})
+                  content_type = body.get('contentType', 'application/octet-stream')
+                  bucket = body.get('bucket', os.environ['RESPONSES_BUCKET'])
                   
                   if not all([file_data, file_name, s3_key]):
-                      raise ValueError("Missing required parameters: fileData, fileName, s3Key")
+                      return error_response(400, 'Missing required parameters')
                   
                   # Decode base64 file data
                   file_bytes = base64.b64decode(file_data)
                   
-                  # Upload to S3 with proper folder structure
-                  s3_client.put_object(
+                  # Upload to S3
+                  s3.put_object(
                       Bucket=bucket,
                       Key=s3_key,
                       Body=file_bytes,
-                      ContentType=content_type or 'application/octet-stream',
+                      ContentType=content_type,
                       Metadata={
                           'original-filename': file_name,
-                          'company-id': str(company_id) if company_id else '',
-                          'employee-id': str(employee_id) if employee_id else '',
-                          'question-id': str(question_id) if question_id else '',
-                          'upload-timestamp': datetime.utcnow().isoformat(),
-                          'upload-method': 'lambda-fallback'
+                          'upload-timestamp': datetime.utcnow().isoformat()
                       }
                   )
                   
-                  # Generate unique file ID
                   file_id = f"file_{uuid.uuid4().hex[:12]}"
                   
-                  print(f"File uploaded successfully: {s3_key}")
-                  
-                  return {
-                      'statusCode': 200,
-                      'headers': cors_headers,
-                      'body': json.dumps({
-                          'success': True,
-                          'fileId': file_id,
-                          's3Key': s3_key,
-                          'bucket': bucket,
-                          'uploadMethod': 'lambda',
-                          'fileName': file_name,
-                          'uploadedAt': datetime.utcnow().isoformat()
-                      })
-                  }
-                  
-              except Exception as e:
-                  print(f"File upload error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': f'File upload failed: {str(e)}'})
-                  }
-
-          def handle_get_company_request(body, cors_headers):
-              """Retrieve company responses"""
-              try:
-                  company_id = body.get('companyId')
-                  if not company_id:
-                      raise ValueError("Missing companyId")
-                      
-                  # Try to get company responses from S3
-                  response_key = f"company-responses/{company_id}.json"
-                  
-                  try:
-                      response = s3_client.get_object(Bucket=RESPONSES_BUCKET, Key=response_key)
-                      content = response['Body'].read().decode('utf-8')
-                      company_data = json.loads(content)
-                      
-                      return {
-                          'statusCode': 200,
-                          'headers': cors_headers,
-                          'body': json.dumps({
-                              'found': True,
-                              'responses': company_data.get('responses', {}),
-                              'lastModified': company_data.get('lastModified'),
-                              'completionPercentage': company_data.get('completionPercentage', 0),
-                              'completed': company_data.get('completed', False)
-                          })
-                      }
-                      
-                  except s3_client.exceptions.NoSuchKey:
-                      return {
-                          'statusCode': 200,
-                          'headers': cors_headers,
-                          'body': json.dumps({
-                              'found': False,
-                              'responses': {},
-                              'message': 'No existing company responses found'
-                          })
-                      }
-                      
-              except Exception as e:
-                  print(f"Get company error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': str(e)})
-                  }
-
-          def handle_get_employee_request(body, cors_headers):
-              """Retrieve employee responses"""
-              try:
-                  company_id = body.get('companyId')
-                  employee_id = body.get('employeeId')
-                  
-                  if not all([company_id, employee_id]):
-                      raise ValueError("Missing companyId or employeeId")
-                      
-                  # Try to get employee responses from S3
-                  response_key = f"employee-responses/{company_id}/{employee_id}.json"
-                  
-                  try:
-                      response = s3_client.get_object(Bucket=RESPONSES_BUCKET, Key=response_key)
-                      content = response['Body'].read().decode('utf-8')
-                      employee_data = json.loads(content)
-                      
-                      return {
-                          'statusCode': 200,
-                          'headers': cors_headers,
-                          'body': json.dumps({
-                              'found': True,
-                              'responses': employee_data.get('responses', {}),
-                              'employeeData': employee_data,
-                              'lastModified': employee_data.get('lastModified')
-                          })
-                      }
-                      
-                  except s3_client.exceptions.NoSuchKey:
-                      return {
-                          'statusCode': 200,
-                          'headers': cors_headers,
-                          'body': json.dumps({
-                              'found': False,
-                              'responses': {},
-                              'message': 'No existing employee responses found'
-                          })
-                      }
-                      
-              except Exception as e:
-                  print(f"Get employee error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': str(e)})
-                  }
-
-          def handle_form_response(event, body, cors_headers):
-              """Handle form response submission (existing functionality)"""
-              try:
-                  # Extract required fields
-                  company_id = body.get('companyId')
-                  form_type = body.get('formType')
-                  responses = body.get('responses', {})
-                  
-                  if not all([company_id, form_type]):
-                      raise ValueError("Missing required fields: companyId, formType")
-                  
-                  # Handle employee ID assignment for new employees
-                  employee_id = body.get('employeeId')
-                  is_new_employee = body.get('isNewEmployee', False)
-                  
-                  if form_type == 'employee' and is_new_employee and employee_id is None:
-                      # Assign new employee ID
-                      employee_id = get_next_employee_id(company_id)
-                      print(f"Assigned new employee ID: {employee_id}")
-                  
-                  # Save response data
-                  response_data = {
-                      'companyId': company_id,
-                      'formType': form_type,
-                      'responses': responses,
-                      'lastModified': datetime.utcnow().isoformat(),
-                      'employeeId': employee_id if form_type == 'employee' else None
-                  }
-                  
-                  # Calculate completion percentage
-                  total_questions = len(responses) if responses else 0
-                  answered_questions = len([r for r in responses.values() if r and str(r).strip()]) if responses else 0
-                  completion_percentage = (answered_questions / total_questions * 100) if total_questions > 0 else 0
-                  response_data['completionPercentage'] = completion_percentage
-                  
-                  # Determine if completed
-                  complete_audit = body.get('completeAudit', False)
-                  force_complete = body.get('forceComplete', False)
-                  prevent_auto_complete = body.get('preventAutoComplete', False)
-                  
-                  if complete_audit or force_complete or (completion_percentage == 100 and not prevent_auto_complete):
-                      response_data['completed'] = True
-                      response_data['completedAt'] = datetime.utcnow().isoformat()
-                  
-                  # Save to S3 with proper folder structure
-                  if form_type == 'company':
-                      s3_key = f"company-responses/{company_id}.json"
-                  else:
-                      s3_key = f"employee-responses/{company_id}/{employee_id}.json"
-                  
-                  s3_client.put_object(
-                      Bucket=RESPONSES_BUCKET,
-                      Key=s3_key,
-                      Body=json.dumps(response_data, indent=2),
-                      ContentType='application/json'
-                  )
-                  
-                  # Return response
-                  result = {
+                  return success_response({
                       'success': True,
-                      'companyId': company_id,
-                      'formType': form_type,
-                      'completionPercentage': completion_percentage,
-                      'lastModified': response_data['lastModified']
-                  }
-                  
-                  if form_type == 'employee':
-                      result['employeeId'] = employee_id
-                  
-                  return {
-                      'statusCode': 200,
-                      'headers': cors_headers,
-                      'body': json.dumps(result)
-                  }
+                      'fileId': file_id,
+                      's3Key': s3_key,
+                      'bucket': bucket,
+                      'fileName': file_name
+                  })
                   
               except Exception as e:
-                  print(f"Form response error: {str(e)}")
-                  return {
-                      'statusCode': 500,
-                      'headers': cors_headers,
-                      'body': json.dumps({'error': str(e)})
-                  }
+                  return error_response(500, f'File upload failed: {str(e)}')
 
-          def get_next_employee_id(company_id):
-              """Get the next available employee ID for a company"""
+          def get_company_status(company_id):
+              """Check if company form is completed, in progress, or not started"""
+              if not company_id:
+                  return error_response(400, 'Company ID is required')
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              filename = f'{company_id}/company.json'
+              
               try:
-                  # List existing employee responses to find the highest ID
-                  response = s3_client.list_objects_v2(
-                      Bucket=RESPONSES_BUCKET,
-                      Prefix=f"employee-responses/{company_id}/"
+                  response = s3.get_object(Bucket=responses_bucket, Key=filename)
+                  data = json.loads(response['Body'].read().decode('utf-8'))
+                  
+                  is_completed = data.get('isCompleted', False)
+                  
+                  if is_completed:
+                      status = 'completed'
+                  elif data.get('currentSection', 1) > 1:
+                      status = 'in-progress'
+                  else:
+                      status = 'in-progress'
+                  
+                  return success_response({
+                      'status': status,
+                      'formData': data
+                  })
+                  
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'NoSuchKey':
+                      return success_response({'status': 'not-started'})
+                  else:
+                      raise e
+
+          def get_employee_list(company_id):
+              """Get list of employees who have completed forms for this company"""
+              if not company_id:
+                  return error_response(400, 'Company ID is required')
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              employees = []
+              
+              try:
+                  response = s3.list_objects_v2(
+                      Bucket=responses_bucket, 
+                      Prefix=f'{company_id}/employee_'
                   )
                   
-                  max_id = 0
                   if 'Contents' in response:
                       for obj in response['Contents']:
-                          key = obj['Key']
-                          # Extract employee ID from key pattern: employee-responses/{company_id}/{employee_id}.json
                           try:
-                              filename = key.split('/')[-1]  # Get filename
-                              employee_id_str = filename.replace('.json', '')  # Remove .json
-                              employee_id = int(employee_id_str)
-                              max_id = max(max_id, employee_id)
-                          except (ValueError, IndexError):
+                              employee_response = s3.get_object(Bucket=responses_bucket, Key=obj['Key'])
+                              employee_data = json.loads(employee_response['Body'].read().decode('utf-8'))
+                              
+                              employee_id = obj['Key'].split('employee_')[1].split('.')[0]
+                              
+                              section1 = employee_data.get('section1', {})
+                              name = f"{section1.get('firstName', '')} {section1.get('lastName', '')}".strip()
+                              if not name:
+                                  name = None
+                              
+                              employees.append({
+                                  'id': employee_id,
+                                  'name': name,
+                                  'completed': employee_data.get('isCompleted', False),
+                                  'lastSaved': employee_data.get('lastSaved')
+                              })
+                          except Exception as e:
+                              print(f"Error processing employee file {obj['Key']}: {str(e)}")
                               continue
                   
-                  return max_id + 1
+                  return success_response({'employees': employees})
                   
-              except Exception as e:
-                  print(f"Error getting next employee ID: {str(e)}")
-                  # Fallback to timestamp-based ID
-                  return int(datetime.utcnow().timestamp()) % 10000
+              except ClientError as e:
+                  print(f"Error listing employees: {str(e)}")
+                  return success_response({'employees': []})
+
+          def get_employee_data(company_id, employee_id):
+              """Get existing employee data for returning employees"""
+              if not company_id or not employee_id:
+                  return error_response(400, 'Company ID and Employee ID are required')
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              filename = f'{company_id}/employee_{employee_id}.json'
+              
+              try:
+                  response = s3.get_object(Bucket=responses_bucket, Key=filename)
+                  data = json.loads(response['Body'].read().decode('utf-8'))
+                  
+                  return success_response({
+                      'found': True,
+                      'formData': data
+                  })
+                  
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'NoSuchKey':
+                      return success_response({'found': False})
+                  else:
+                      raise e
+
+          def save_company_form(event):
+              """Save company form data to S3"""
+              body = json.loads(event['body'])
+              company_id = body['companyId']
+              form_data = body['formData']
+              section = body['section']
+              
+              if not company_id:
+                  return error_response(400, 'Company ID is required')
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              filename = f'{company_id}/company.json'
+              
+              s3.put_object(
+                  Bucket=responses_bucket,
+                  Key=filename,
+                  Body=json.dumps(form_data, indent=2),
+                  ContentType='application/json'
+              )
+              
+              print(f"[v6.0] Company form saved: {company_id}, section {section}")
+              
+              return success_response({
+                  'message': 'Company form saved successfully',
+                  'companyId': company_id,
+                  'section': section
+              })
+
+          def save_employee_form(event):
+              """Save employee form data to S3"""
+              body = json.loads(event['body'])
+              company_id = body['companyId']
+              employee_id = body['employeeId']
+              form_data = body['formData']
+              section = body['section']
+              
+              if not company_id or not employee_id:
+                  return error_response(400, 'Company ID and Employee ID are required')
+              
+              responses_bucket = os.environ['RESPONSES_BUCKET']
+              filename = f'{company_id}/employee_{employee_id}.json'
+              
+              s3.put_object(
+                  Bucket=responses_bucket,
+                  Key=filename,
+                  Body=json.dumps(form_data, indent=2),
+                  ContentType='application/json'
+              )
+              
+              print(f"[v6.0] Employee form saved: {company_id}, employee {employee_id}, section {section}")
+              
+              return success_response({
+                  'message': 'Employee form saved successfully',
+                  'companyId': company_id,
+                  'employeeId': employee_id,
+                  'section': section
+              })
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # API Gateway
+  DMGTFormAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'dmgt-basic-form-api-${Environment}'
+      Description: API for DMGT Basic Form - Enhanced Version
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+  # API Gateway Resources
+  CompanyStatusResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: company-status
+
+  CompanyStatusProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !Ref CompanyStatusResource
+      PathPart: '{companyId}'
+
+  EmployeeListResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: employee-list
+
+  EmployeeListProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !Ref EmployeeListResource
+      PathPart: '{companyId}'
+
+  EmployeeDataResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: employee-data
+
+  EmployeeDataCompanyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !Ref EmployeeDataResource
+      PathPart: '{companyId}'
+
+  EmployeeDataProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !Ref EmployeeDataCompanyResource
+      PathPart: '{employeeId}'
+
+  SaveCompanyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: save-company
+
+  SaveEmployeeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ParentId: !GetAtt DMGTFormAPI.RootResourceId
+      PathPart: save-employee
+
+  # API Gateway Methods
+  CompanyStatusMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref CompanyStatusProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormMainLambda.Arn}/invocations'
+
+  EmployeeListMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref EmployeeListProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormMainLambda.Arn}/invocations'
+
+  EmployeeDataMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref EmployeeDataProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormMainLambda.Arn}/invocations'
+
+  SaveCompanyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref SaveCompanyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormMainLambda.Arn}/invocations'
+
+  SaveEmployeeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      ResourceId: !Ref SaveEmployeeResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DMGTFormMainLambda.Arn}/invocations'
+
+  # API Gateway Deployment
+  DMGTFormAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - CompanyStatusMethod
+      - EmployeeListMethod
+      - EmployeeDataMethod
+      - SaveCompanyMethod
+      - SaveEmployeeMethod
+    Properties:
+      RestApiId: !Ref DMGTFormAPI
+      StageName: !Ref Environment
+
+  # Lambda Permission
+  DMGTFormMainLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DMGTFormMainLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DMGTFormAPI}/*/*/*'
+
+  # CloudFront Distribution
+  DMGTFormCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt DMGTFormWebsiteBucket.RegionalDomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+        Comment: !Sub 'CloudFront distribution for dmgt-basic-form-${Environment}'
+      Tags:
+        - Key: Project
+          Value: dmgt-basic-form
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  WebsiteBucketName:
+    Description: Name of the S3 bucket for website hosting
+    Value: !Ref DMGTFormWebsiteBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteBucket'
+
+  ConfigBucketName:
+    Description: Name of the S3 bucket for form configuration
+    Value: !Ref DMGTFormConfigBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigBucket'
+
+  ResponsesBucketName:
+    Description: Name of the S3 bucket for form responses
+    Value: !Ref DMGTFormResponsesBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ResponsesBucket'
+
+  ApiGatewayUrl:
+    Description: URL of the API Gateway
+    Value: !Sub 'https://${DMGTFormAPI}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  CloudFrontDomainName:
+    Description: CloudFront Distribution Domain Name
+    Value: !GetAtt DMGTFormCloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontDomain'
+
+  WebsiteURL:
+    Description: Website URL
+    Value: !Sub 'https://${DMGTFormCloudFrontDistribution.DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteURL'
