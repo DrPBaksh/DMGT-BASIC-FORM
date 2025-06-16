@@ -13,10 +13,10 @@ INFRASTRUCTURE_DIR="$SCRIPT_DIR/infrastructure"
 DATA_DIR="$SCRIPT_DIR/data"
 ENV_FILE="$FRONTEND_DIR/.env.production"
 
-# Configuration with defaults
+# Configuration with defaults - Fixed to use eu-west-2 as default region
 MODE="deploy"
-ENVIRONMENT=${ENVIRONMENT:-prod}
-REGION=${AWS_REGION:-us-east-1}
+ENVIRONMENT=${ENVIRONMENT:-dev}
+REGION=${AWS_REGION:-eu-west-2}
 OWNER_NAME=${OWNER_NAME:-$(whoami)}
 VERBOSE=${VERBOSE:-false}
 DRY_RUN=${DRY_RUN:-false}
@@ -211,8 +211,8 @@ show_usage() {
     echo -e "${BOLD}Options:${NC}"
     echo -e "  --delete          : Destroys all infrastructure"
     echo -e "  --frontend-only   : Builds and deploys only the React frontend"
-    echo -e "  --environment=ENV : Set environment (default: prod)"
-    echo -e "  --region=REGION   : Set AWS region (default: us-east-1)"
+    echo -e "  --environment=ENV : Set environment (default: dev)"
+    echo -e "  --region=REGION   : Set AWS region (default: eu-west-2)"
     echo -e "  --owner=NAME      : Set owner name (default: current username)"
     echo -e "  --verbose         : Enable verbose logging"
     echo -e "  --dry-run         : Show commands without executing"
@@ -220,8 +220,8 @@ show_usage() {
     echo -e "  --help            : Show this help message"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
-    echo -e "  ${CYAN}$0${NC}                                    # Deploy to prod"
-    echo -e "  ${CYAN}$0 --environment=dev --verbose${NC}        # Deploy to dev with verbose logging"
+    echo -e "  ${CYAN}$0${NC}                                    # Deploy to dev in eu-west-2"
+    echo -e "  ${CYAN}$0 --environment=prod --verbose${NC}      # Deploy to prod with verbose logging"
     echo -e "  ${CYAN}$0 --frontend-only${NC}                   # Deploy frontend only"
     echo -e "  ${CYAN}$0 --delete --environment=dev${NC}        # Delete dev environment"
     echo ""
@@ -677,8 +677,14 @@ destroy_infrastructure() {
             --query "Stacks[0].Outputs[?OutputKey=='ResponsesBucketName'].OutputValue" \
             --output text 2>/dev/null || echo "")
         
+        local files_bucket=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='FilesBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+        
         # Empty each bucket
-        for bucket in "$config_bucket" "$website_bucket" "$responses_bucket"; do
+        for bucket in "$config_bucket" "$website_bucket" "$responses_bucket" "$files_bucket"; do
             if [ ! -z "$bucket" ] && [ "$bucket" != "None" ]; then
                 log_info "Emptying bucket: $bucket"
                 execute_command "aws s3 rm s3://$bucket --recursive --region $REGION" "Empty bucket $bucket" "true"
