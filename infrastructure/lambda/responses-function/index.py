@@ -16,7 +16,7 @@ REGION = 'eu-west-2'
 def lambda_handler(event, context):
     """
     Enhanced Lambda handler for DMGT Basic Form
-    Handles both form responses AND file uploads
+    Handles both form responses AND file uploads with proper error handling
     """
     
     print(f"Event: {json.dumps(event)}")
@@ -24,8 +24,8 @@ def lambda_handler(event, context):
     # CORS headers
     cors_headers = {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+        'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT'
     }
     
     try:
@@ -37,7 +37,11 @@ def lambda_handler(event, context):
                 'body': json.dumps({'message': 'CORS preflight'})
             }
         
-        # Parse request body
+        # Handle GET requests (status checks)
+        if event.get('httpMethod') == 'GET':
+            return handle_get_request(event, cors_headers)
+        
+        # Parse request body for POST requests
         body = event.get('body', '{}')
         if isinstance(body, str):
             try:
@@ -66,6 +70,106 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'headers': cors_headers,
             'body': json.dumps({'error': str(e)})
+        }
+
+def handle_get_request(event, cors_headers):
+    """Handle GET requests for company status"""
+    try:
+        query_params = event.get('queryStringParameters') or {}
+        company_id = query_params.get('companyId')
+        
+        if not company_id:
+            return {
+                'statusCode': 400,
+                'headers': cors_headers,
+                'body': json.dumps({'error': 'Missing companyId parameter'})
+            }
+        
+        # Get company status
+        company_status = get_company_status(company_id)
+        
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps(company_status)
+        }
+        
+    except Exception as e:
+        print(f"GET request error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': cors_headers,
+            'body': json.dumps({'error': str(e)})
+        }
+
+def get_company_status(company_id):
+    """Get comprehensive company status including completion and employee info"""
+    try:
+        # Check for company responses
+        company_key = f"company-responses/{company_id}.json"
+        company_completed = False
+        company_in_progress = False
+        company_completion_percentage = 0
+        company_last_modified = None
+        
+        try:
+            response = s3_client.get_object(Bucket=RESPONSES_BUCKET, Key=company_key)
+            content = response['Body'].read().decode('utf-8')
+            company_data = json.loads(content)
+            
+            company_completion_percentage = company_data.get('completionPercentage', 0)
+            company_completed = company_data.get('completed', False)
+            company_in_progress = company_completion_percentage > 0 and not company_completed
+            company_last_modified = company_data.get('lastModified')
+            
+        except s3_client.exceptions.NoSuchKey:
+            pass
+        
+        # Check for employee responses
+        employee_ids = []
+        employee_count = 0
+        
+        try:
+            response = s3_client.list_objects_v2(
+                Bucket=RESPONSES_BUCKET,
+                Prefix=f"employee-responses/{company_id}/"
+            )
+            
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    key = obj['Key']
+                    try:
+                        filename = key.split('/')[-1]
+                        employee_id_str = filename.replace('.json', '')
+                        employee_id = int(employee_id_str)
+                        employee_ids.append(employee_id)
+                    except (ValueError, IndexError):
+                        continue
+                
+                employee_count = len(employee_ids)
+                employee_ids.sort()
+        
+        except Exception as e:
+            print(f"Error listing employee responses: {str(e)}")
+        
+        return {
+            'companyCompleted': company_completed,
+            'companyInProgress': company_in_progress,
+            'completionPercentage': company_completion_percentage,
+            'lastModified': company_last_modified,
+            'employeeCount': employee_count,
+            'employeeIds': employee_ids
+        }
+        
+    except Exception as e:
+        print(f"Error getting company status: {str(e)}")
+        return {
+            'companyCompleted': False,
+            'companyInProgress': False,
+            'completionPercentage': 0,
+            'lastModified': None,
+            'employeeCount': 0,
+            'employeeIds': []
         }
 
 def handle_presigned_url_request(body, cors_headers):
@@ -130,12 +234,12 @@ def handle_file_upload_request(body, cors_headers):
         # Decode base64 file data
         file_bytes = base64.b64decode(file_data)
         
-        # Upload to S3
+        # Upload to S3 with proper folder structure
         s3_client.put_object(
             Bucket=bucket,
             Key=s3_key,
             Body=file_bytes,
-            ContentType=content_type,
+            ContentType=content_type or 'application/octet-stream',
             Metadata={
                 'original-filename': file_name,
                 'company-id': str(company_id) if company_id else '',
@@ -195,7 +299,8 @@ def handle_get_company_request(body, cors_headers):
                     'found': True,
                     'responses': company_data.get('responses', {}),
                     'lastModified': company_data.get('lastModified'),
-                    'completionPercentage': company_data.get('completionPercentage', 0)
+                    'completionPercentage': company_data.get('completionPercentage', 0),
+                    'completed': company_data.get('completed', False)
                 })
             }
             
@@ -309,7 +414,7 @@ def handle_form_response(event, body, cors_headers):
             response_data['completed'] = True
             response_data['completedAt'] = datetime.utcnow().isoformat()
         
-        # Save to S3
+        # Save to S3 with proper folder structure
         if form_type == 'company':
             s3_key = f"company-responses/{company_id}.json"
         else:
@@ -357,7 +462,7 @@ def get_next_employee_id(company_id):
             Prefix=f"employee-responses/{company_id}/"
         )
         
-        max_id = -1
+        max_id = 0
         if 'Contents' in response:
             for obj in response['Contents']:
                 key = obj['Key']
