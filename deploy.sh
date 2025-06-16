@@ -236,6 +236,46 @@ show_usage() {
 }
 
 #####################################
+# NPM Fix Functions
+#####################################
+fix_npm_issues() {
+    log_info "🔧 Attempting to fix npm issues..."
+    
+    cd "$FRONTEND_DIR"
+    
+    # Step 1: Clean npm cache
+    log_info "Cleaning npm cache..."
+    npm cache clean --force || true
+    
+    # Step 2: Remove node_modules and package-lock.json
+    log_info "Removing node_modules and package-lock.json..."
+    rm -rf node_modules
+    rm -f package-lock.json
+    
+    # Step 3: Fresh install
+    log_info "Performing fresh npm install..."
+    if npm install; then
+        log_success "✅ npm install succeeded"
+        cd "$SCRIPT_DIR"
+        return 0
+    else
+        log_warning "npm install failed, trying alternative approaches..."
+        
+        # Step 4: Try with legacy peer deps
+        log_info "Trying with --legacy-peer-deps..."
+        if npm install --legacy-peer-deps; then
+            log_success "✅ npm install with --legacy-peer-deps succeeded"
+            cd "$SCRIPT_DIR"
+            return 0
+        else
+            log_error "❌ All npm install attempts failed"
+            cd "$SCRIPT_DIR"
+            return 1
+        fi
+    fi
+}
+
+#####################################
 # Validation Functions
 #####################################
 check_prerequisites() {
@@ -531,18 +571,86 @@ deploy_infrastructure() {
         changeset_type="UPDATE"
     fi
     
-    execute_command "aws cloudformation create-change-set \
+    # Create changeset with error handling for "no changes" scenario
+    local changeset_result=0
+    if ! aws cloudformation create-change-set \
         --stack-name $STACK_NAME \
         --template-body file://$INFRASTRUCTURE_DIR/cloudformation-template.yaml \
         --parameters ParameterKey=Environment,ParameterValue=$ENVIRONMENT \
         --capabilities CAPABILITY_NAMED_IAM \
         --change-set-name $changeset_name \
         --change-set-type $changeset_type \
-        --region $REGION" "Changeset creation"
+        --region $REGION > /tmp/changeset_output.log 2>&1; then
+        changeset_result=$?
+        log_warning "Changeset creation returned non-zero exit code: $changeset_result"
+    fi
     
-    # Wait for changeset
+    # Wait for changeset with timeout and check for "no changes" error
     log_info "Waiting for changeset to be created..."
-    aws cloudformation wait change-set-create-complete --stack-name $STACK_NAME --change-set-name $changeset_name --region $REGION
+    local wait_attempts=0
+    local max_attempts=30
+    
+    while [ $wait_attempts -lt $max_attempts ]; do
+        local changeset_status=$(aws cloudformation describe-change-set \
+            --stack-name $STACK_NAME \
+            --change-set-name $changeset_name \
+            --region $REGION \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+        
+        local changeset_reason=$(aws cloudformation describe-change-set \
+            --stack-name $STACK_NAME \
+            --change-set-name $changeset_name \
+            --region $REGION \
+            --query 'StatusReason' \
+            --output text 2>/dev/null || echo "")
+        
+        case $changeset_status in
+            "CREATE_COMPLETE")
+                log_success "Changeset created successfully"
+                break
+                ;;
+            "FAILED")
+                if [[ "$changeset_reason" == *"didn't contain changes"* ]]; then
+                    log_warning "No infrastructure changes detected - stack is already up to date"
+                    log_info "Skipping infrastructure deployment, continuing with frontend..."
+                    
+                    # Clean up the failed changeset
+                    aws cloudformation delete-change-set \
+                        --stack-name $STACK_NAME \
+                        --change-set-name $changeset_name \
+                        --region $REGION > /dev/null 2>&1 || true
+                    
+                    local cf_end_time=$(date +%s)
+                    local cf_duration=$((cf_end_time - cf_start_time))
+                    log_success "Infrastructure check completed in ${cf_duration}s (no changes needed)"
+                    return 0
+                else
+                    log_error "Changeset creation failed: $changeset_reason"
+                    # Clean up the failed changeset
+                    aws cloudformation delete-change-set \
+                        --stack-name $STACK_NAME \
+                        --change-set-name $changeset_name \
+                        --region $REGION > /dev/null 2>&1 || true
+                    exit 1
+                fi
+                ;;
+            "CREATE_PENDING"|"CREATE_IN_PROGRESS")
+                printf "\r${CYAN}⏳ Waiting for changeset creation... %ds${NC}" $((wait_attempts * 2))
+                sleep 2
+                wait_attempts=$((wait_attempts + 1))
+                ;;
+            *)
+                log_error "Unexpected changeset status: $changeset_status"
+                exit 1
+                ;;
+        esac
+    done
+    
+    if [ $wait_attempts -ge $max_attempts ]; then
+        log_error "Changeset creation timed out"
+        exit 1
+    fi
     
     # Execute changeset
     log_info "Executing changeset..."
@@ -689,9 +797,25 @@ build_frontend() {
     local node_version=$(node --version | cut -d'v' -f2)
     log_debug "Node.js version: $node_version"
     
-    # Install dependencies
+    # Install dependencies with error handling
     log_info "Installing npm dependencies..."
-    execute_command "npm ci --silent" "NPM dependencies installation"
+    
+    # Try npm ci first, with fallback to fix if it fails
+    if ! npm ci --silent; then
+        log_warning "npm ci failed, attempting to fix npm issues..."
+        cd "$SCRIPT_DIR"
+        
+        if ! fix_npm_issues; then
+            log_error "Failed to fix npm issues. Please check your package.json and node version compatibility."
+            exit 1
+        fi
+        
+        cd "$FRONTEND_DIR"
+        log_info "Retrying npm ci after fixes..."
+        execute_command "npm ci --silent" "NPM dependencies installation (retry)"
+    else
+        log_success "NPM dependencies installation completed"
+    fi
     
     # Create environment configuration
     create_environment_file
