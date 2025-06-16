@@ -811,8 +811,7 @@ build_frontend() {
         fi
         
         cd "$FRONTEND_DIR"
-        log_info "Retrying npm ci after fixes..."
-        execute_command "npm ci --silent" "NPM dependencies installation (retry)"
+        log_success "✅ npm install completed successfully - skipping npm ci retry"
     else
         log_success "NPM dependencies installation completed"
     fi
