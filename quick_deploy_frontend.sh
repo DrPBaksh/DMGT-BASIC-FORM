@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Quick Frontend Deployment Fix for Node.js 18
-# This script handles the Sunday afternoon fixes deployment
+# This script handles the Sunday afternoon fixes deployment with proper Node.js 18 compatibility
 
 set -e
 
@@ -45,9 +45,6 @@ cd frontend
 echo "🧹 Cleaning up existing dependencies..."
 rm -rf node_modules package-lock.json
 
-# Set Node.js options for compatibility with Node 18
-export NODE_OPTIONS="--openssl-legacy-provider"
-
 # Create .env file with API URL
 echo "⚙️ Creating environment configuration..."
 API_URL=$(aws cloudformation describe-stacks \
@@ -63,13 +60,34 @@ EOF
 
 echo "✅ Environment configured with API URL: $API_URL"
 
-# Install dependencies with npm (more reliable than npm ci for this case)
-echo "📦 Installing dependencies..."
-npm install --legacy-peer-deps
+# Install dependencies with npm using force to bypass peer dependency issues
+echo "📦 Installing dependencies (Node.js 18 compatible)..."
+npm install --force --silent
 
-# Build the application
+# Build the application with proper Node.js 18 environment
 echo "🔨 Building React application..."
-npm run build
+
+# Try building with different Node.js options for compatibility
+echo "Attempting build with standard configuration..."
+if ! npm run build; then
+    echo "Standard build failed, trying with legacy OpenSSL provider..."
+    export NODE_OPTIONS="--openssl-legacy-provider"
+    if ! npm run build; then
+        echo "Legacy provider build failed, trying with increased memory..."
+        export NODE_OPTIONS="--openssl-legacy-provider --max_old_space_size=4096"
+        if ! npm run build; then
+            echo "❌ All build attempts failed. Let's try a different approach..."
+            echo "Clearing cache and trying once more..."
+            npm cache clean --force
+            rm -rf node_modules package-lock.json
+            npm install --force --silent
+            export NODE_OPTIONS="--openssl-legacy-provider"
+            npm run build
+        fi
+    fi
+fi
+
+echo "✅ Build completed successfully!"
 
 # Deploy to S3
 echo "🚀 Deploying to S3..."
@@ -81,7 +99,7 @@ if [ ! -z "$CLOUDFRONT_ID" ] && [ "$CLOUDFRONT_ID" != "None" ]; then
     aws cloudfront create-invalidation \
         --distribution-id $CLOUDFRONT_ID \
         --paths "/*" \
-        --region $REGION
+        --region $REGION > /dev/null
     echo "✅ CloudFront cache invalidated"
 else
     echo "ℹ️ No CloudFront distribution found, skipping cache invalidation"
@@ -101,7 +119,7 @@ echo "Website URL: $WEBSITE_URL"
 echo ""
 echo "✅ Sunday afternoon fixes are now live:"
 echo "   • Load Previous Survey functionality"
-echo "   • Professional layout improvements"
+echo "   • Professional layout improvements"  
 echo "   • British English terminology"
 echo ""
 echo "🧪 Test the improvements:"
