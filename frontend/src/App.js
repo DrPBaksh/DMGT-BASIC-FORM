@@ -7,7 +7,7 @@ import Logo from './components/Logo';
 import ProgressBar from './components/ProgressBar';
 import EmployeeSessionManager from './components/EmployeeSessionManager';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://your-api-gateway-url.amazonaws.com/prod';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://hfrcfsq0v6.execute-api.eu-west-2.amazonaws.com/dev';
 
 function App() {
   const [activeTab, setActiveTab] = useState('company');
@@ -37,9 +37,9 @@ function App() {
   const [lastSavedTime, setLastSavedTime] = useState(null);
   const [manualSaveInProgress, setManualSaveInProgress] = useState(false);
 
-  // CRITICAL FIX: Company modification tracking
+  // FIXED: Company modification tracking - now allows modification of completed assessments
   const [companyCanModify, setCompanyCanModify] = useState(true);
-  const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'in_progress', 'completed', 'read_only'
+  const [companyFormState, setCompanyFormState] = useState('loading'); // 'loading', 'new', 'existing', 'can_continue'
   const [isInitialLoad, setIsInitialLoad] = useState(true); // Track if this is the first load
 
   // NEW: Employee ID notification state
@@ -141,7 +141,7 @@ function App() {
     setLoading(false);
   };
 
-  // CRITICAL FIX: Better company status checking with proper completion logic
+  // FIXED: Better company status checking with proper completion logic
   const checkCompanyStatus = async () => {
     if (!companyId) return;
     
@@ -168,30 +168,39 @@ function App() {
           setLastSavedTime(status.lastModified);
         }
 
-        // CRITICAL FIX: Proper form state determination with better modification support
+        // FIXED: New logic - always allow modification, show appropriate messaging
         const hasAnyResponses = status.completionPercentage > 0;
-        const isFullyComplete = status.completionPercentage === 100 && status.companyCompleted;
         
-        if (isFullyComplete) {
-          // Allow modification of completed forms with clear indication
-          setCompanyFormState('completed');
-          setCompanyCanModify(true);
-          console.log('Company form is completed but can be modified');
-        } else if (hasAnyResponses) {
-          // Has some responses but not complete
-          setCompanyFormState('in_progress');
-          setCompanyCanModify(true);
-          console.log('Company form is in progress and editable');
+        if (hasAnyResponses) {
+          // File exists - ask if user wants to continue/update
+          const shouldContinue = window.confirm(
+            `An assessment already exists for Organization ID: ${companyId} (${status.completionPercentage}% complete).\n\n` +
+            `Last modified: ${status.lastModified ? new Date(status.lastModified).toLocaleString() : 'Unknown'}\n\n` +
+            `Do you want to CONTINUE/UPDATE this existing assessment?\n\n` +
+            `• Click OK to load and continue the existing assessment\n` +
+            `• Click Cancel to start fresh (existing data will not be affected)`
+          );
           
-          // Load existing responses if this is initial load
-          if (isInitialLoad) {
-            await loadCompanyResponses();
+          if (shouldContinue) {
+            setCompanyFormState('existing');
+            setCompanyCanModify(true);
+            console.log('User chose to continue existing assessment');
+            
+            // Load existing responses
+            if (isInitialLoad) {
+              await loadCompanyResponses();
+            }
+          } else {
+            setCompanyFormState('new');
+            setCompanyCanModify(true);
+            setResponses({}); // Clear responses for fresh start
+            console.log('User chose to start fresh assessment');
           }
         } else {
-          // No responses yet
+          // No responses yet - new assessment
           setCompanyFormState('new');
           setCompanyCanModify(true);
-          console.log('New company form - fully editable');
+          console.log('New company assessment - no existing data');
         }
         
         setIsInitialLoad(false); // Mark initial load as complete
@@ -214,7 +223,16 @@ function App() {
   const loadCompanyResponses = async () => {
     try {
       console.log(`Loading company responses for ID: ${companyId}`);
-      const response = await fetch(`${API_BASE_URL}/responses?action=getCompany&companyId=${companyId}`);
+      const response = await fetch(`${API_BASE_URL}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          action: 'getCompany',
+          companyId: companyId
+        })
+      });
       
       if (response.ok) {
         const data = await response.json();
@@ -222,6 +240,10 @@ function App() {
           setResponses(data.responses);
           setHasUnsavedChanges(false); // Mark as no unsaved changes since we just loaded
           console.log('Company responses loaded:', data.responses);
+          
+          // Show confirmation that existing data was loaded
+          const responseCount = Object.keys(data.responses).length;
+          alert(`Existing assessment loaded successfully!\n\nFound ${responseCount} previous responses.\nYou can now continue where you left off or modify any responses.`);
         }
       }
     } catch (error) {
@@ -232,7 +254,18 @@ function App() {
   const loadEmployeeData = async (employeeId) => {
     try {
       console.log(`Loading employee data for ID: ${employeeId}`);
-      const response = await fetch(`${API_BASE_URL}/responses?action=getEmployee&companyId=${companyId}&employeeId=${employeeId}`);
+      const response = await fetch(`${API_BASE_URL}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          action: 'getEmployee',
+          companyId: companyId,
+          employeeId: employeeId
+        })
+      });
+      
       if (response.ok) {
         const data = await response.json();
         if (data.found) {
@@ -301,7 +334,7 @@ function App() {
         }));
       }
 
-      setCompanyFormState('in_progress');
+      setCompanyFormState('existing');
       setHasUnsavedChanges(false);
       setLastSavedTime(new Date().toISOString());
       setSaveStatus('saved');
@@ -374,12 +407,12 @@ function App() {
         lastModified: new Date().toISOString()
       }));
 
-      setCompanyFormState('completed');
+      setCompanyFormState('existing');
       setHasUnsavedChanges(false);
       setLastSavedTime(new Date().toISOString());
       setSaveStatus('saved');
       
-      alert('Company audit completed and submitted successfully!');
+      alert('Company audit completed and submitted successfully!\n\nYou can still make changes and save them if needed.');
       setTimeout(() => setSaveStatus(''), 3000);
 
     } catch (error) {
@@ -503,16 +536,6 @@ function App() {
       );
       if (!proceed) return;
     }
-
-    // Allow viewing completed company assessments with confirmation
-    if (tabId === 'company' && companyFormState === 'completed') {
-      const proceed = window.confirm(
-        'Company audit has been completed. Do you want to review or modify responses? Note: You can make changes and save them.'
-      );
-      if (!proceed) {
-        return;
-      }
-    }
     
     console.log(`Switching to tab: ${tabId}`);
     setActiveTab(tabId);
@@ -533,7 +556,7 @@ function App() {
       setEmployeeSessionReady(true);
       setSessionInitialized(true);
       // Load company responses if they exist
-      if (companyFormState === 'in_progress' || companyFormState === 'completed') {
+      if (companyFormState === 'existing') {
         loadCompanyResponses();
       } else {
         setResponses({});
@@ -673,17 +696,11 @@ function App() {
       switch (companyFormState) {
         case 'new':
           return { icon: '🆕', text: 'New Assessment', class: 'status-new' };
-        case 'in_progress':
+        case 'existing':
           return { 
             icon: '📝', 
-            text: `In Progress (${companyStatus.completionPercentage}% complete)`, 
-            class: 'status-in-progress' 
-          };
-        case 'completed':
-          return { 
-            icon: '✅', 
-            text: `Completed ${lastSavedTime ? new Date(lastSavedTime).toLocaleDateString() : ''}`, 
-            class: 'status-completed' 
+            text: `Continuing Assessment (${companyStatus.completionPercentage}% complete)`, 
+            class: 'status-existing' 
           };
         default:
           return null;
@@ -707,9 +724,9 @@ function App() {
             ⚠️ Unsaved changes
           </span>
         )}
-        {companyFormState === 'completed' && (
+        {companyFormState === 'existing' && (
           <span className="modification-notice">
-            (You can make changes and save them)
+            (You can modify any responses and save them)
           </span>
         )}
       </div>
@@ -766,6 +783,11 @@ function App() {
           {hasUnsavedChanges && (
             <p className="unsaved-warning-text">
               ⚠️ You have unsaved changes. Remember to save your progress before leaving this page.
+            </p>
+          )}
+          {companyFormState === 'existing' && (
+            <p className="continue-note">
+              🔄 <strong>Continuing Existing Assessment:</strong> You can modify any responses and save your changes.
             </p>
           )}
         </div>
