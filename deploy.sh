@@ -496,6 +496,31 @@ EOF
     log_debug "API URL configured: $API_URL"
 }
 
+fix_npm_dependencies() {
+    log_info "Fixing npm dependencies and caches..."
+    
+    cd "$FRONTEND_DIR"
+    
+    # Clear npm cache
+    log_info "Clearing npm cache..."
+    execute_command "npm cache clean --force" "Clear npm cache" "true"
+    
+    # Remove node_modules and package-lock.json if they exist
+    log_info "Removing existing node_modules and package-lock.json..."
+    execute_command "rm -rf node_modules package-lock.json" "Remove node_modules and package-lock.json" "true"
+    
+    # Create .npmrc for compatibility
+    log_info "Creating .npmrc for Node.js v18 compatibility..."
+    cat > .npmrc << EOF
+legacy-peer-deps=true
+fund=false
+audit=false
+progress=false
+EOF
+    
+    cd "$SCRIPT_DIR"
+}
+
 build_frontend() {
     log_step "Building React Application"
     
@@ -506,9 +531,12 @@ build_frontend() {
     local node_version=$(node --version | cut -d'v' -f2)
     log_debug "Node.js version: $node_version"
     
-    # Install dependencies
-    log_info "Installing npm dependencies..."
-    execute_command "npm ci --silent" "NPM dependencies installation"
+    # Fix npm dependencies first
+    fix_npm_dependencies
+    
+    # Install dependencies with improved options
+    log_info "Installing npm dependencies with legacy peer deps..."
+    execute_command "npm install --legacy-peer-deps --no-audit --no-fund --silent" "NPM dependencies installation"
     
     # Create environment configuration
     create_environment_file
