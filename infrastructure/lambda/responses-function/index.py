@@ -21,11 +21,12 @@ def lambda_handler(event, context):
     
     print(f"Event: {json.dumps(event)}")
     
-    # CORS headers
+    # Enhanced CORS headers to handle all origins and methods
     cors_headers = {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-        'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT'
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token',
+        'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PUT,DELETE,PATCH',
+        'Access-Control-Max-Age': '86400'
     }
     
     try:
@@ -34,38 +35,337 @@ def lambda_handler(event, context):
             return {
                 'statusCode': 200,
                 'headers': cors_headers,
-                'body': json.dumps({'message': 'CORS preflight'})
+                'body': json.dumps({'message': 'CORS preflight successful'})
             }
         
-        # Handle GET requests (status checks)
-        if event.get('httpMethod') == 'GET':
-            return handle_get_request(event, cors_headers)
+        # Extract path and method
+        http_method = event.get('httpMethod', 'GET')
+        resource_path = event.get('resource', '')
+        path_parameters = event.get('pathParameters') or {}
+        query_parameters = event.get('queryStringParameters') or {}
         
-        # Parse request body for POST requests
-        body = event.get('body', '{}')
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except json.JSONDecodeError:
-                body = {}
+        print(f"HTTP Method: {http_method}, Resource Path: {resource_path}")
+        print(f"Path Parameters: {path_parameters}")
+        print(f"Query Parameters: {query_parameters}")
         
-        # Route based on action or existing functionality
-        action = body.get('action')
+        # Route based on the path and method
+        if http_method == 'GET':
+            # Handle GET requests based on path
+            if '/responses/company-status/' in resource_path:
+                company_id = path_parameters.get('companyId')
+                return handle_company_status_check(company_id, cors_headers)
+            elif '/responses/employee-list/' in resource_path:
+                company_id = path_parameters.get('companyId')
+                return handle_employee_list(company_id, cors_headers)
+            elif '/responses/employee-data/' in resource_path:
+                company_id = path_parameters.get('companyId')
+                employee_id = path_parameters.get('employeeId')
+                return handle_get_employee_data(company_id, employee_id, cors_headers)
+            else:
+                return handle_get_request(event, cors_headers)
         
-        if action == 'getPresignedUrl':
-            return handle_presigned_url_request(body, cors_headers)
-        elif action == 'uploadFile':
-            return handle_file_upload_request(body, cors_headers)
-        elif action == 'getCompany':
-            return handle_get_company_request(body, cors_headers)
-        elif action == 'getEmployee': 
-            return handle_get_employee_request(body, cors_headers)
-        else:
-            # Default: Handle form response submission
-            return handle_form_response(event, body, cors_headers)
+        elif http_method == 'POST':
+            # Parse request body for POST requests
+            body = event.get('body', '{}')
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except json.JSONDecodeError:
+                    body = {}
+            
+            # Route POST requests based on path
+            if '/responses/save-company' in resource_path:
+                return handle_save_company(body, cors_headers)
+            elif '/responses/save-employee' in resource_path:
+                return handle_save_employee(body, cors_headers)
+            else:
+                # Handle legacy API calls based on action
+                action = body.get('action')
+                if action == 'getPresignedUrl':
+                    return handle_presigned_url_request(body, cors_headers)
+                elif action == 'uploadFile':
+                    return handle_file_upload_request(body, cors_headers)
+                elif action == 'getCompany':
+                    return handle_get_company_request(body, cors_headers)
+                elif action == 'getEmployee': 
+                    return handle_get_employee_request(body, cors_headers)
+                else:
+                    # Default: Handle form response submission
+                    return handle_form_response(event, body, cors_headers)
+        
+        # Default response for unmatched routes
+        return {
+            'statusCode': 404,
+            'headers': cors_headers,
+            'body': json.dumps({
+                'error': 'Route not found',
+                'method': http_method,
+                'path': resource_path
+            })
+        }
             
     except Exception as e:
         print(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': cors_headers,
+            'body': json.dumps({'error': str(e)})
+        }
+
+def handle_company_status_check(company_id, cors_headers):
+    """Handle company status check requests"""
+    try:
+        if not company_id:
+            return {
+                'statusCode': 400,
+                'headers': cors_headers,
+                'body': json.dumps({'error': 'Missing companyId parameter'})
+            }
+        
+        # Get company status
+        company_status = get_company_status(company_id)
+        
+        # Determine status text
+        if company_status['companyCompleted']:
+            status = 'completed'
+        elif company_status['companyInProgress']:
+            status = 'in-progress'
+        else:
+            status = 'not-started'
+        
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({
+                'status': status,
+                **company_status
+            })
+        }
+        
+    except Exception as e:
+        print(f"Company status check error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': cors_headers,
+            'body': json.dumps({'error': str(e)})
+        }
+
+def handle_employee_list(company_id, cors_headers):
+    """Handle employee list requests"""
+    try:
+        if not company_id:
+            return {
+                'statusCode': 400,
+                'headers': cors_headers,
+                'body': json.dumps({'error': 'Missing companyId parameter'})
+            }
+        
+        # Get employee list
+        employees = []
+        try:
+            response = s3_client.list_objects_v2(
+                Bucket=RESPONSES_BUCKET,
+                Prefix=f"employee-responses/{company_id}/"
+            )
+            
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    key = obj['Key']
+                    try:
+                        # Get employee data
+                        employee_response = s3_client.get_object(Bucket=RESPONSES_BUCKET, Key=key)
+                        employee_data = json.loads(employee_response['Body'].read().decode('utf-8'))
+                        
+                        filename = key.split('/')[-1]
+                        employee_id = filename.replace('.json', '')
+                        
+                        employees.append({
+                            'id': employee_id,
+                            'name': f"{employee_data.get('responses', {}).get('section1', {}).get('firstName', '')} {employee_data.get('responses', {}).get('section1', {}).get('lastName', '')}".strip(),
+                            'completed': employee_data.get('completed', False),
+                            'lastSaved': employee_data.get('lastModified'),
+                            'position': employee_data.get('responses', {}).get('section1', {}).get('position', ''),
+                            'department': employee_data.get('responses', {}).get('section1', {}).get('department', '')
+                        })
+                    except Exception as e:
+                        print(f"Error processing employee {key}: {str(e)}")
+                        continue
+        
+        except Exception as e:
+            print(f"Error listing employees: {str(e)}")
+        
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({
+                'employees': employees
+            })
+        }
+        
+    except Exception as e:
+        print(f"Employee list error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': cors_headers,
+            'body': json.dumps({'error': str(e)})
+        }
+
+def handle_get_employee_data(company_id, employee_id, cors_headers):
+    """Handle getting specific employee data"""
+    try:
+        if not all([company_id, employee_id]):
+            return {
+                'statusCode': 400,
+                'headers': cors_headers,
+                'body': json.dumps({'error': 'Missing companyId or employeeId'})
+            }
+        
+        # Try to get employee data
+        response_key = f"employee-responses/{company_id}/{employee_id}.json"
+        
+        try:
+            response = s3_client.get_object(Bucket=RESPONSES_BUCKET, Key=response_key)
+            content = response['Body'].read().decode('utf-8')
+            employee_data = json.loads(content)
+            
+            return {
+                'statusCode': 200,
+                'headers': cors_headers,
+                'body': json.dumps({
+                    'found': True,
+                    'formData': employee_data.get('responses', {}),
+                    'currentSection': employee_data.get('currentSection', 1),
+                    'lastModified': employee_data.get('lastModified')
+                })
+            }
+            
+        except s3_client.exceptions.NoSuchKey:
+            return {
+                'statusCode': 200,
+                'headers': cors_headers,
+                'body': json.dumps({
+                    'found': False,
+                    'message': 'Employee data not found'
+                })
+            }
+            
+    except Exception as e:
+        print(f"Get employee data error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': cors_headers,
+            'body': json.dumps({'error': str(e)})
+        }
+
+def handle_save_company(body, cors_headers):
+    """Handle saving company form data"""
+    try:
+        company_id = body.get('companyId')
+        form_data = body.get('formData', {})
+        section = body.get('section', 1)
+        
+        if not company_id:
+            return {
+                'statusCode': 400,
+                'headers': cors_headers,
+                'body': json.dumps({'error': 'Missing companyId'})
+            }
+        
+        # Create response data structure
+        response_data = {
+            'companyId': company_id,
+            'formType': 'company',
+            'responses': form_data,
+            'currentSection': section,
+            'lastModified': datetime.utcnow().isoformat(),
+            'completed': form_data.get('isCompleted', False)
+        }
+        
+        if response_data['completed']:
+            response_data['completedAt'] = datetime.utcnow().isoformat()
+        
+        # Save to S3
+        s3_key = f"company-responses/{company_id}.json"
+        s3_client.put_object(
+            Bucket=RESPONSES_BUCKET,
+            Key=s3_key,
+            Body=json.dumps(response_data, indent=2),
+            ContentType='application/json'
+        )
+        
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({
+                'success': True,
+                'companyId': company_id,
+                'section': section,
+                'completed': response_data['completed'],
+                'lastModified': response_data['lastModified']
+            })
+        }
+        
+    except Exception as e:
+        print(f"Save company error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': cors_headers,
+            'body': json.dumps({'error': str(e)})
+        }
+
+def handle_save_employee(body, cors_headers):
+    """Handle saving employee form data"""
+    try:
+        company_id = body.get('companyId')
+        employee_id = body.get('employeeId')
+        form_data = body.get('formData', {})
+        section = body.get('section', 1)
+        
+        if not all([company_id, employee_id]):
+            return {
+                'statusCode': 400,
+                'headers': cors_headers,
+                'body': json.dumps({'error': 'Missing companyId or employeeId'})
+            }
+        
+        # Create response data structure
+        response_data = {
+            'companyId': company_id,
+            'employeeId': employee_id,
+            'formType': 'employee',
+            'responses': form_data,
+            'currentSection': section,
+            'lastModified': datetime.utcnow().isoformat(),
+            'completed': form_data.get('isCompleted', False)
+        }
+        
+        if response_data['completed']:
+            response_data['completedAt'] = datetime.utcnow().isoformat()
+        
+        # Save to S3
+        s3_key = f"employee-responses/{company_id}/{employee_id}.json"
+        s3_client.put_object(
+            Bucket=RESPONSES_BUCKET,
+            Key=s3_key,
+            Body=json.dumps(response_data, indent=2),
+            ContentType='application/json'
+        )
+        
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({
+                'success': True,
+                'companyId': company_id,
+                'employeeId': employee_id,
+                'section': section,
+                'completed': response_data['completed'],
+                'lastModified': response_data['lastModified']
+            })
+        }
+        
+    except Exception as e:
+        print(f"Save employee error: {str(e)}")
         return {
             'statusCode': 500,
             'headers': cors_headers,
@@ -141,8 +441,7 @@ def get_company_status(company_id):
                     try:
                         filename = key.split('/')[-1]
                         employee_id_str = filename.replace('.json', '')
-                        employee_id = int(employee_id_str)
-                        employee_ids.append(employee_id)
+                        employee_ids.append(employee_id_str)
                     except (ValueError, IndexError):
                         continue
                 
